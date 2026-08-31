@@ -1286,6 +1286,12 @@ def cmd_export(rpc, con, args):
     """Write out/all_tokens.csv and out/independent.csv."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
+    # The published CSV covers the ATTRIBUTED range. Discovery reaches much
+    # further, but those rows carry only an address and a block: no launcher,
+    # no metadata, and an identical placeholder evidence string repeated
+    # hundreds of thousands of times. Shipping them added 150MB of redundancy
+    # and pushed the file past GitHub's 100MB limit without adding information.
+    # The full discovery set lives in out/scan.db and is regenerable.
     p1 = os.path.join(DATA_DIR, "all_tokens.csv")
     cols = ["rank", "first_block", "first_ts_utc", "symbol", "name", "address",
             "classification", "decimals", "total_supply", "deployer",
@@ -1298,11 +1304,26 @@ def cmd_export(rpc, con, args):
             SELECT first_block,first_ts,symbol,name,address,klass,decimals,
                    total_supply,deployer,first_tx_to,mint_to,creation_method,
                    source,first_tx,evidence
-            FROM token ORDER BY first_block, address"""), 1):
+            FROM token WHERE first_tx_from IS NOT NULL
+            ORDER BY first_block, address"""), 1):
             w.writerow([csv_safe(sanitize_text(x) if isinstance(x, str) else x)
                         for x in ([i, r[0], fmt_ts(r[1])] + list(r[2:]))])
             n = i
     print(f"wrote {p1} ({n} rows)")
+
+    # GitHub refuses to preview files over ~5MB, so the full table is shipped
+    # gzipped alongside a browsable head that renders in the web UI.
+    import gzip
+    import shutil
+    with open(p1, "rb") as src, gzip.open(p1 + ".gz", "wb", compresslevel=9) as dst:
+        shutil.copyfileobj(src, dst)
+    sample = os.path.join(DATA_DIR, "first_2000_tokens.csv")
+    with open(p1) as src, open(sample, "w") as dst:
+        for i, line in enumerate(src):
+            if i > 2000:
+                break
+            dst.write(line)
+    print(f"wrote {p1}.gz and {sample}")
 
     p2 = os.path.join(DATA_DIR, "independent.csv")
     cols2 = ["rank", "first_block", "first_ts_utc", "symbol", "name", "address",

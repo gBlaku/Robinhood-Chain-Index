@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 BRIEF.md
 # (BRIEF.md is your private working brief - excluded from the repo)
+
+# full table ships gzipped; the raw csv is 55MB and GitHub cannot preview it
+data/all_tokens.csv

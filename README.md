@@ -164,7 +164,7 @@ oversell what this can actually answer.
 
 | Layer | What you get | Coverage |
 |---|---|---|
-| Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,345 · **635,045 tokens** |
+| Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,345 · **635,045 tokens** (in `scan.db`, not shipped) |
 | Attribution | who launched it (`first_tx_from`) | blocks 0 to 9,000,000 · **125,961 tokens** |
 | Metadata | name, symbol, decimals, supply | backfilling |
 
@@ -194,11 +194,20 @@ actually live.
 ```
 scan.py                        the pipeline, one file, subcommand dispatch
 config/known_addresses.json    classification anchors and their evidence
-data/all_tokens.csv            every token in creation order, with launcher
+data/all_tokens.csv.gz         125,961 attributed tokens, creation order
+data/first_2000_tokens.csv     the same table's opening, browsable on GitHub
 data/independent.csv           earliest independent launches, enriched
 docs/REPORT.md                 full writeup
 tests/                         decoding and sanitisation, stdlib unittest
 ```
+
+The full table ships gzipped because GitHub will not preview anything over
+about 5MB, and the raw CSV is 55MB. `first_2000_tokens.csv` is the same data,
+truncated so you can actually read it in the web UI. Both cover the attributed
+range. The wider discovery set (635,045 tokens, address and block only) stays in
+the local SQLite database rather than the repo, since those rows carry no
+launcher, no metadata, and an identical placeholder string repeated half a
+million times.
 
 ## Usage
 
