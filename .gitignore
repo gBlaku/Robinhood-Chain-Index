@@ -1,0 +1,9 @@
+# working directory: scan database, logs, checkpoints
+out/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+BRIEF.md
+# (BRIEF.md is your private working brief - excluded from the repo)

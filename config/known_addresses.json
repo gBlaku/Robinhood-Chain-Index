@@ -1,0 +1,129 @@
+{
+  "_comment": [
+    "Classification anchors for Robinhood Chain (chain ID 4663).",
+    "Every entry records HOW it was identified, so a reader can audit or",
+    "disprove a label without trusting the author. Nothing here is derived",
+    "from a token's name -- names are the weakest possible signal and are",
+    "never used as primary evidence.",
+    "Verified 2026-08-30 against https://rpc.mainnet.chain.robinhood.com."
+  ],
+
+  "chain": {
+    "chain_id": 4663,
+    "rpc": "https://rpc.mainnet.chain.robinhood.com",
+    "explorer": "https://robinhoodchain.blockscout.com",
+    "genesis_hash": "0xaad15f3d702aaea00caf3e9bb56395efe9127bc3b31b24921abf1eee3409305c",
+    "block_1_timestamp": 1777567931,
+    "public_launch_block": 653325,
+    "public_launch_note": "2026-07-01T00:00:00Z, found by binary search over block timestamps. Block 1 is 2026-04-30 -- the chain ran 62 days before the announced launch."
+  },
+
+  "infrastructure": {
+    "0x0bd7d308f8e1639fab988df18a8011f41eacad73": {
+      "label": "WETH",
+      "evidence": "name()='WETH', decimals()=18; wraps the chain's ETH gas token. First mint block 9482."
+    },
+    "0x89e5db8b5aa49aa85ac63f691524311aeb649eba": {
+      "label": "Uniswap V2 Router",
+      "evidence": "exposes factory() -> 0x8bceaa40... and WETH() -> 0x0bd7d308...; appears as first_tx_to for 164 UNI-V2 LP tokens."
+    },
+    "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f": {
+      "label": "Uniswap V2 Factory",
+      "evidence": "returned by router.factory(); emits PairCreated; allPairsLength() = 39941 at scan time."
+    }
+  },
+
+  "launchpads": {
+    "0x5818fddddb96bcd50bee4253f11b324e7dea961b": {
+      "label": "launchpad-A",
+      "operator": "0xce54513ab9c2fbc8a2f9034bab6170572e2eef47",
+      "first_token_block": 61385,
+      "evidence": "owner() is the same EOA that deployed the three placeholder '.' tokens at blocks 61208/61472/61483 -- the operator testing its own product. Exposes WETH() and emits Uniswap V2 PairCreated itself, so it is a UniV2-fork factory with a launch wrapper.",
+      "quirk": "Its tokens ARE their own AMM pair -- getReserves() succeeds on the token address. Vanity addresses end in 0000.",
+      "public_name": "unknown -- could not be established from on-chain data"
+    },
+    "0xd9ec2db5f3d1b236843925949fe5bd8a3836fccb": {
+      "label": "NOXA Fun",
+      "operator": "0x7e035fb048a31e0481b88074557415b1c187242b",
+      "first_token_block": 61869,
+      "evidence": "owner() is the EOA that deployed the token named 'Testing NOXA Fun ;)' at block 61394. Appears as mint_to for 3276 tokens (bonding-curve style: the launchpad holds the supply).",
+      "note": "This is the contract block explorers report as the CREATOR of every token launched through it, including CASHCAT."
+    }
+  },
+
+  "bridged": {
+    "0xcdca5d374e46a6dddab50bd2d9acb8c796ec35c3": {
+      "label": "canonical-asset minter",
+      "shared_owner": "0xf09afe78d3c7d359b334d7cb88995751f7ec5e13",
+      "evidence": "This contract executes the first mint for LINK, wstETH and syrupUSDG, AND returns the same owner() as the tokens it mints. That makes those tokens mint/burn representations of off-chain assets, not launches.",
+      "caveat": "These tokens do NOT expose l1Address(), so they are not Arbitrum standard-gateway tokens. 'Bridged' here means custom mint/burn representation."
+    }
+  },
+
+  "official_rwa": {
+    "0x2b94105fff37630f98e1f24811dad588fc5c3a87": {
+      "label": "Robinhood stock-token issuer EOA",
+      "evidence": "deployed 95 tokens starting block 34714, including 'Roundhill Weekly T-Bill ETF • Robinhood' (WEEK)."
+    },
+    "0x4262efbd176f02824af27010bea218429c33c7e8": {
+      "label": "wrapped stock-token factory",
+      "evidence": "first_tx_to for 72 wrapped stock tokens (wWEEK, wAAOI). codelen 130 -- a minimal proxy factory."
+    },
+    "_name_marker": {
+      "pattern": "• Robinhood",
+      "evidence": "RWA stock tokens carry this issuer suffix in name(). Used only as a SECONDARY signal alongside deployer identity."
+    }
+  },
+
+  "deployment_routes": {
+    "0x0000000071727de22e5e9d8baf0edac6f37da032": {
+      "label": "ERC-4337 EntryPoint v0.7",
+      "evidence": "canonical cross-chain EntryPoint address; 682 tokens deployed via smart-account transactions through it.",
+      "note": "Not a launchpad. Tokens routed through it are still attributed to their tx sender."
+    }
+  },
+
+  "staging_window": {
+    "end_block": 58539,
+    "distinct_deployers": 16,
+    "evidence": "In blocks 0-58539 (36 days, 2026-05-11 to 2026-06-15) exactly 16 distinct EOAs deployed any ERC-20. In the next 38000 blocks that jumps to 148 and the first public launchpad appears. A 36-day window with 16 deployers and no launchpad is a closed partner-onboarding period, so tokens born inside it are partner/protocol deployments.",
+    "note": "This is a population statistic, not a read on token names. It is the load-bearing evidence separating partner deployments from open launches."
+  },
+
+  "reference_points": {
+    "0x01637b14b7378b99de75a64d50656d98488d9a4d": {
+      "label": "MARIAN / Lady Marian -- first independent launch",
+      "block": 58539,
+      "timestamp_utc": "2026-06-15T15:00:10Z",
+      "deployer": "0x937933e11ad6307ae0d8b8115986e91734be2d5c",
+      "evidence": "first-mint tx 0x65ae852367a231c97952716bcaef8b8ffa9d19cec8d0cdc24a9924187e78ada1 has to=null (direct EOA deploy, no factory). owner() returns the zero address -- renounced."
+    },
+    "0x68184c449e1a8f34fa18d289737129fd27b66f8f": {
+      "label": "USDG / Global Dollar -- earliest ERC-20 contract found",
+      "block": 56,
+      "timestamp_utc": "2026-05-05T17:59:49Z",
+      "evidence": "found by the contract-creation pass, NOT the mint scan: totalSupply() == 0, so it never emitted a mint and is invisible to a Transfer-from-zero scan. Creation tx 0x5a88b74f8ade975f0fbb8908b70cde112d64b263c9b60967996bb20314d48769.",
+      "note": "Distinct contract from the USDG at block 433 that did mint."
+    }
+  },
+
+  "endpoint_limits": {
+    "_comment": "Empirically calibrated. These make the difference between a 100-minute scan and a 100-hour one.",
+    "getlogs_block_range_cap": null,
+    "getlogs_result_cap": 10000,
+    "getlogs_error": "logs matched by query exceeds limit of 10000",
+    "batch_sub_request_caps": {
+      "eth_call": 25,
+      "eth_getBlockByNumber": 10,
+      "eth_getTransactionReceipt": 10,
+      "eth_getTransactionByHash": 15
+    },
+    "throughput": {
+      "eth_call_sub_requests_per_sec": 200,
+      "eth_getBlockByNumber_full_blocks_per_sec": 118,
+      "getlogs_blocks_per_sec_sparse": 7800
+    },
+    "parallelism_note": "The limiter is a per-IP token bucket priced by method cost. Opening parallel connections LOWERS throughput: 3 threads measured 68 blk/s vs 118 single-threaded. Keep the scanner serial.",
+    "user_agent_note": "A default Python/urllib User-Agent receives HTTP 403. A curl-like UA works."
+  }
+}
