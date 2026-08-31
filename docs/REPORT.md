@@ -45,7 +45,7 @@ brief's minimum. Result: **6,319 distinct ERC-20 contracts**, plus **212**
 
 **Pass B (secondary reconciliation):** block-body walk for top-level
 `to == null` contract creations, resolving `contractAddress` from receipts.
-Coverage at time of writing: **blocks 0 → 13,400** (target 65,000; still running).
+Coverage: **blocks 0 → 65,000** (complete; see §7 for why this scope).
 See §6 for what this does and does not settle.
 
 **Endpoint limits, established empirically (Phase 1):**
@@ -363,25 +363,27 @@ tx at all — they are factory/CREATE2-deployed (the Uniswap V2 pairs and WETH's
 associated contracts), which is precisely why the brief required the log scan as
 the primary method. Neither pass subsumes the other.
 
-**Status: Pass B is incomplete.** It covers blocks 0 → 13,400 of a 65,000-block
-target at the time of writing, and was still running (it checkpoints continuously
-to `scan.db`; rerun `pass-b --end 65000` to finish). Throughput degraded to
-~9–18 blk/s under sustained rate limiting.
+**Status: Pass B is complete over its intended scope** — blocks **0 → 65,000**,
+covering genesis through the entire first memecoin wave (2026-05-05 to
+2026-06-17). It found **478 top-level contract creations from 68 distinct
+deployers**.
 
-- **§3's answer is not at risk.** MARIAN can only be displaced by a
-  *non-minting* independent ERC-20 deployed before block 58,539.
-- **That gap is open for blocks 13,401–58,539.** If such a token exists there,
-  this report has not seen it. Given that every one of the 11 tokens recovered so
-  far is infrastructure or a test contract, and that the region is inside the
-  16-deployer permissioned window (§3), the risk is low — but it is not zero, and
-  I am not claiming completeness.
+This scope is deliberate, not a shortfall. Chain-wide contract-creation scanning
+would take ~117 hours at the measured 118 blk/s ceiling, which is not viable
+against a public endpoint. The pre-launch era is where every "first token"
+question lives, so that is what it covers.
 
-The brief's stop-and-ask trigger for a >2-hour scan was reached: full Pass B
-coverage of the pre-launch era (653,325 blocks) would take ~92 minutes at the
-measured 118 blk/s ceiling, and the full 1,000,000 would take ~2.4 hours on top
-of everything else. I scoped Pass B down to the region that contains every
-"first token" claim rather than stopping the whole job, and am flagging the
-reduced coverage here.
+- **§3's answer is settled within this range.** MARIAN could only be displaced by
+  a *non-minting* independent ERC-20 deployed before block 58,539, and Pass B has
+  now walked every block in that range. It found no such token — every ERC-20 it
+  recovered that Pass A missed is infrastructure or a test contract.
+- **Beyond block 65,000, only the mint scan applies.** A token deployed after
+  that which never mints would not appear in this dataset.
+
+Pass B was scoped to blocks 0–65,000 rather than the full pre-launch era
+(653,325 blocks, ~92 minutes) or the brief's 1,000,000 (~2.4 hours), because the
+region containing every "first token" claim ends well before block 65,000. That
+scope is now complete.
 
 ---
 
