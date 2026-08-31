@@ -771,8 +771,9 @@ def cmd_creators(rpc, con, args):
     rows = con.execute("""
         SELECT address, first_tx FROM token
         WHERE first_tx IS NOT NULL AND first_tx_from IS NULL
+          AND first_block < ?
         ORDER BY first_block
-    """).fetchall()
+    """, (args.max_block,)).fetchall()
     print(f"resolving first-mint tx for {len(rows)} tokens", file=sys.stderr)
     t0 = time.time()
     for i in range(0, len(rows), 300):
@@ -1393,9 +1394,15 @@ def cmd_launcher(rpc, con, args):
         FROM token WHERE first_tx_from = ? ORDER BY first_block""", (q,)).fetchall()
     if not launches:
         print(f"no launches indexed for {q}")
+        att = meta_get(con, "attribution_through_block")
         cur = meta_get(con, "pass_a_cursor", "0")
-        print(f"(index covers blocks 0-{int(cur)-1:,}; a launch outside that "
-              f"range would not appear)")
+        if att:
+            print(f"(launcher attribution covers blocks 0-{int(att):,}; token "
+                  f"discovery reaches {int(cur)-1:,}. A launch above the "
+                  f"attribution boundary is known but not yet attributed.)")
+        else:
+            print(f"(index covers blocks 0-{int(cur)-1:,}; a launch outside "
+                  f"that range would not appear)")
         return
 
     lp = {a: v["label"] for a, v in ANCHORS["launchpads"].items()}
@@ -1451,6 +1458,18 @@ def cmd_attribute(rpc, con, args):
                       file=sys.stderr)
 
     cmd_creators(rpc, con, args)
+    remaining = con.execute(
+        "SELECT COUNT(*) FROM token WHERE first_tx_from IS NULL AND first_tx "
+        "IS NOT NULL AND first_block < ?", (args.max_block,)).fetchone()[0]
+    if remaining == 0:
+        bound = con.execute(
+            "SELECT MIN(first_block) FROM token WHERE first_tx_from IS NULL "
+            "AND first_tx IS NOT NULL").fetchone()[0]
+        meta_set(con, "attribution_through_block",
+                 (bound - 1) if bound else meta_get(con, "pass_a_cursor", "0"))
+        con.commit()
+        print(f"attribution boundary recorded: block "
+              f"{meta_get(con, 'attribution_through_block')}", file=sys.stderr)
     done = con.execute(
         "SELECT COUNT(*) FROM token WHERE first_tx_from IS NOT NULL").fetchone()[0]
     print(f"attribution complete: {done:,}/{seeded:,} tokens have a launcher "
@@ -1520,6 +1539,9 @@ def main():
                     help="pass-b blocks per checkpoint (split to RPC caps internally)")
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--limit", type=int, default=25, help="enrich: how many tokens")
+    ap.add_argument("--max-block", type=int, default=1 << 62,
+                    help="attribute: only resolve tokens born below this block, "
+                         "so attribution coverage is an exact contiguous prefix")
     ap.add_argument("--timestamps", action="store_true",
                     help="attribute: also backfill block timestamps (slow)")
     ap.add_argument("address", nargs="?", default=None,
