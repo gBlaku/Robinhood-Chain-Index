@@ -86,8 +86,8 @@
   "staging_window": {
     "end_block": 58539,
     "distinct_deployers": 16,
-    "evidence": "In blocks 0-58539 (36 days, 2026-05-11 to 2026-06-15) exactly 16 distinct EOAs deployed any ERC-20. In the next 38000 blocks that jumps to 148 and the first public launchpad appears. A 36-day window with 16 deployers and no launchpad is a closed partner-onboarding period, so tokens born inside it are partner/protocol deployments.",
-    "note": "This is a population statistic, not a read on token names. It is the load-bearing evidence separating partner deployments from open launches."
+    "evidence": "In blocks 0-58539 (36 days, 2026-05-11 to 2026-06-15) exactly 16 distinct EOAs deployed any ERC-20. In the next 38000 blocks that jumps to 148 and the first public launchpad appears. Every token in that window is a partner/protocol deployment.",
+    "note": "This is a population statistic, not a read on token names. IMPORTANT: it does NOT show the chain was permissioned. MARIAN (block 58539) was deployed by an EOA outside those 16 and succeeded, so nothing was blocking non-partner deployment. The low count reflects the chain being unannounced and undiscovered, not an allowlist. Treat this as evidence about who was PRESENT, not about who was PERMITTED."
   },
 
   "reference_points": {

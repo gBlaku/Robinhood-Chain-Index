@@ -146,9 +146,17 @@ population statistic, not the token names:
 > deployed any ERC-20 at all. In the next 38,000 blocks that number jumps to
 > **148**, and the first public launchpad appears.
 
-A 36-day window with 16 deploying addresses and no launchpad is a closed
-partner-onboarding period. Tokens born inside it are partner/protocol
-deployments. MARIAN's deployer is not one of those 16.
+Every token in that window is a partner or protocol deployment, and MARIAN's
+deployer is not one of those 16.
+
+**What this does not show.** An earlier draft of this report called that window
+"permissioned" and a "closed partner-onboarding period." That overclaims, and
+MARIAN itself is the counter-example: its deployer was outside the 16 and
+deployed successfully, so nothing was blocking non-partner deployment. The low
+deployer count reflects an unannounced chain nobody had found yet, not an
+allowlist. It is evidence about who was **present**, not who was **permitted** —
+and it is therefore not grounds for inferring that early launches came from
+insiders.
 
 Supporting per-token evidence used by the classifier:
 

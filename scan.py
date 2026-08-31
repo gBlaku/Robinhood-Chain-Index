@@ -1053,10 +1053,11 @@ def cmd_classify(rpc, con, args):
     # --- permissioned staging window ---
     # Empirical: only 16 distinct EOAs deployed ANY token in blocks 0-58,539
     # (36 days, 2026-05-11 to 2026-06-15). In the next 38k blocks that jumps to
-    # 148. A 36-day window with 16 deployers and no launchpad is a closed
-    # partner-onboarding period, so tokens born in it are partner/protocol
-    # deployments rather than open launches. This is a population statistic,
-    # not a read on the token names.
+    # 148. Every token in that window is a partner/protocol deployment.
+    # This is a population statistic, not a read on the token names -- and it
+    # says who was PRESENT, not who was PERMITTED: MARIAN's deployer was
+    # outside the 16 and deployed fine, so the chain was not gated, just
+    # undiscovered.
     n_staging_deployers = len({r[0] for r in con.execute(
         "SELECT first_tx_from FROM token WHERE first_block < ?", (STAGING_END,))
         if r[0]})
