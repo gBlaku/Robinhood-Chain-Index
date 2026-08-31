@@ -648,6 +648,49 @@ def eth_call(rpc, to, data, block="latest"):
         return None
 
 
+def probe_tokens_bulk(rpc, addresses, per_req=25):
+    """Probe many addresses at once: 4 eth_calls each, packed into batches.
+
+    The endpoint accepts 25 eth_call sub-requests per batch, so 6 tokens per
+    request at 4 calls each; safe_batch splits to that cap automatically.
+    """
+    out = {}
+    for i in range(0, len(addresses), per_req):
+        grp = addresses[i:i + per_req]
+        calls = []
+        for a in grp:
+            for sel in (SEL_TOTAL_SUPPLY, SEL_NAME, SEL_SYMBOL, SEL_DECIMALS):
+                calls.append(("eth_call", [{"to": a, "data": sel}, "latest"]))
+        res = rpc.safe_batch(calls)
+        for j, a in enumerate(grp):
+            r = res[j * 4:(j + 1) * 4]
+            def ok(x):
+                return x if isinstance(x, str) else None
+            total = decode_uint(ok(r[0]))
+            out[a] = None if total is None else {
+                "address": a,
+                "name": decode_string(ok(r[1])),
+                "symbol": decode_string(ok(r[2])),
+                "decimals": decode_uint(ok(r[3])),
+                "total_supply": total,
+            }
+    return out
+
+
+def block_ts_bulk(rpc, blocks, per_req=100):
+    """Fetch timestamps for many block numbers."""
+    out = {}
+    blocks = sorted(set(blocks))
+    for i in range(0, len(blocks), per_req):
+        grp = blocks[i:i + per_req]
+        res = rpc.safe_batch(
+            [("eth_getBlockByNumber", [hex(b), False]) for b in grp])
+        for b, r in zip(grp, res):
+            if isinstance(r, dict) and r.get("timestamp"):
+                out[b] = int(r["timestamp"], 16)
+    return out
+
+
 def probe_token(rpc, address):
     """Single-address ERC-20 probe. Thin wrapper over the bulk path."""
     return probe_tokens_bulk(rpc, [address]).get(address)
@@ -1381,8 +1424,10 @@ def cmd_attribute(rpc, con, args):
     print(f"token rows seeded from mint_first: {seeded:,} "
           f"({time.time()-t0:.1f}s)", file=sys.stderr)
 
-    # backfill block timestamps we don't have yet (batched, cheap)
-    missing_ts = [r[0] for r in con.execute(
+    # Block timestamps are NOT needed to attribute a launcher, and at chain
+    # scale they cost ~60k requests (eth_getBlockByNumber caps at 10/batch).
+    # Opt-in only, so the core feature is never gated behind them.
+    missing_ts = [] if not args.timestamps else [r[0] for r in con.execute(
         "SELECT DISTINCT first_block FROM token WHERE first_ts IS NULL")]
     if missing_ts:
         print(f"resolving {len(missing_ts):,} block timestamps", file=sys.stderr)
@@ -1403,6 +1448,40 @@ def cmd_attribute(rpc, con, args):
           f"({time.time()-t0:.0f}s total)", file=sys.stderr)
 
 
+def cmd_selftest(rpc, con, args):
+    """Verify every function's global references actually resolve.
+
+    This exists because an over-eager dead-code removal once deleted two live
+    helpers (probe_tokens_bulk, block_ts_bulk) that sat between a function and
+    its neighbour. Python only raises NameError when the line finally runs, so
+    the breakage surfaced hours later, mid-pipeline. Disassembling every
+    function and checking its LOAD_GLOBAL targets catches it in a second.
+    """
+    import dis
+    import builtins
+    mod = sys.modules[__name__]
+    known = set(dir(mod)) | set(dir(builtins))
+    missing = []
+    for name in dir(mod):
+        fn = getattr(mod, name)
+        if not callable(fn) or not hasattr(fn, "__code__"):
+            continue
+        if getattr(fn, "__module__", None) != __name__:
+            continue
+        for ins in dis.get_instructions(fn.__code__):
+            if ins.opname == "LOAD_GLOBAL":
+                ref = (ins.argval or "").lstrip("+")
+                if ref and ref not in known:
+                    missing.append((name, ref))
+    for fname, ref in missing:
+        print(f"  BROKEN: {fname}() references undefined global {ref!r}")
+    cmds = [c for c in dir(mod) if c.startswith("cmd_")]
+    print(f"checked {len(cmds)} commands, {len(known)} module names")
+    if missing:
+        raise SystemExit(f"selftest FAILED: {len(missing)} unresolved reference(s)")
+    print("selftest OK: every global reference resolves")
+
+
 def cmd_status(rpc, con, args):
     a = int(meta_get(con, "pass_a_cursor", "0"))
     b = int(meta_get(con, "pass_b_cursor", "0"))
@@ -1421,7 +1500,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["phase1", "pass-a", "pass-b", "meta",
                                     "creators", "clusters", "classify", "enrich", "mcap",
-                                    "export", "attribute", "launcher", "status"])
+                                    "export", "attribute", "launcher", "selftest",
+                                    "status"])
     ap.add_argument("--rpc", default=DEFAULT_RPC)
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--start", type=int, default=None)
@@ -1431,6 +1511,8 @@ def main():
                     help="pass-b blocks per checkpoint (split to RPC caps internally)")
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--limit", type=int, default=25, help="enrich: how many tokens")
+    ap.add_argument("--timestamps", action="store_true",
+                    help="attribute: also backfill block timestamps (slow)")
     ap.add_argument("address", nargs="?", default=None,
                     help="launcher: wallet or token address to look up")
     args = ap.parse_args()
@@ -1441,7 +1523,7 @@ def main():
      "meta": cmd_meta, "creators": cmd_creators, "clusters": cmd_clusters,
      "classify": cmd_classify, "enrich": cmd_enrich, "mcap": cmd_mcap,
      "export": cmd_export, "attribute": cmd_attribute,
-     "launcher": cmd_launcher,
+     "launcher": cmd_launcher, "selftest": cmd_selftest,
      "status": cmd_status}[args.cmd](rpc, con, args)
     con.close()
 
