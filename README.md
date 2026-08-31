@@ -90,6 +90,12 @@ Or skip all that and read [`data/all_tokens.csv`](data/all_tokens.csv).
 | `all_tokens.csv` | Every ERC-20 in creation order: block, timestamp, symbol, name, address, **launcher**, launchpad, classification, and the evidence string behind each label |
 | `independent.csv` | The earliest independent launches, enriched: holders, transfers, pool, FDV, obscurity rating |
 
+**Current coverage: blocks 0–2,000,000** (genesis to 2026-07-04), 6,319 tokens.
+A full-chain rescan to block ~50.5M is in progress; committed CSVs will be
+replaced when it and the metadata/attribution passes complete. Until then, a
+`launcher` lookup for a wallet whose launches fall outside that range will
+correctly report that it has nothing indexed rather than claiming zero launches.
+
 ## Findings
 
 Full writeup in [`docs/REPORT.md`](docs/REPORT.md). The short version:
