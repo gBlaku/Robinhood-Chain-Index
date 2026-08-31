@@ -1,6 +1,6 @@
 # robinhood-chain-token-index
 
-**Every ERC-20 on Robinhood Chain from genesis, indexed by the wallet that actually launched it — which block explorers get wrong.**
+**An index of ERC-20 launches on Robinhood Chain, keyed on the wallet that actually launched each token — which block explorers get wrong.**
 
 ---
 
@@ -90,11 +90,30 @@ Or skip all that and read [`data/all_tokens.csv`](data/all_tokens.csv).
 | `all_tokens.csv` | Every ERC-20 in creation order: block, timestamp, symbol, name, address, **launcher**, launchpad, classification, and the evidence string behind each label |
 | `independent.csv` | The earliest independent launches, enriched: holders, transfers, pool, FDV, obscurity rating |
 
-**Current coverage: blocks 0–2,000,000** (genesis to 2026-07-04), 6,319 tokens.
-A full-chain rescan to block ~50.5M is in progress; committed CSVs will be
-replaced when it and the metadata/attribution passes complete. Until then, a
-`launcher` lookup for a wallet whose launches fall outside that range will
-correctly report that it has nothing indexed rather than claiming zero launches.
+### Coverage — two tiers, deliberately
+
+The index has two layers, and they cover different ranges. Conflating them
+would overstate what this can answer, so they are reported separately.
+
+| Tier | What it gives you | Coverage |
+|---|---|---|
+| **Discovery** | every token's address + birth block, from the mint-log scan | blocks **0 – 22,583,345** (genesis → 2026-07-03), **635,045 tokens** |
+| **Attribution** | the launcher wallet (`first_tx_from`) — the thing explorers can't do | blocks **0 – N**, backfilling in block order |
+| **Metadata** | name / symbol / decimals / supply | blocks 0 – 2,000,000 |
+
+Why they differ: discovery is one `eth_getLogs` sweep and is cheap. Attribution
+needs the first-mint *transaction* for every token, and the public endpoint caps
+`eth_getTransactionByHash` at 15 per batch and roughly 15–20 tx/s sustained —
+about 10 hours for 626k tokens. It runs as a resumable backfill in block order,
+so attribution coverage is always a contiguous prefix you can state exactly.
+
+`scan.py launcher` reports the current attribution boundary when it cannot
+answer, rather than returning an empty list that would read as "this wallet
+launched nothing."
+
+Tokens discovered but not yet attributed or probed are classified
+`Unclassified` — not `Independent`. The classifier does not assert a label it
+has no evidence for.
 
 ## Findings
 

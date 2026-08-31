@@ -175,7 +175,7 @@ class Rpc:
                 self._ok_streak = 0
                 saw_429 = True
                 time.sleep(backoff)
-                backoff = min(backoff * 1.7, 20.0)
+                backoff = min(backoff * 1.9, 20.0)
                 continue
             if r.status_code != 200:
                 last = RpcError(f"HTTP {r.status_code}: {r.text[:200]}")
@@ -771,6 +771,7 @@ def cmd_creators(rpc, con, args):
     rows = con.execute("""
         SELECT address, first_tx FROM token
         WHERE first_tx IS NOT NULL AND first_tx_from IS NULL
+        ORDER BY first_block
     """).fetchall()
     print(f"resolving first-mint tx for {len(rows)} tokens", file=sys.stderr)
     t0 = time.time()
@@ -790,7 +791,10 @@ def cmd_creators(rpc, con, args):
             " creation_block=COALESCE(creation_block,?) WHERE address=?", upd)
         con.commit()
         n = min(i + 300, len(rows))
-        print(f"  txinfo {n}/{len(rows)} | {n/(time.time()-t0):.0f}/s", file=sys.stderr)
+        rate = n / max(time.time() - t0, 1e-9)
+        eta = (len(rows) - n) / rate / 60 if rate else 0
+        print(f"  txinfo {n:,}/{len(rows):,} | {rate:.0f}/s | eta {eta:,.0f}m",
+              file=sys.stderr)
 
 
 def cmd_clusters(rpc, con, args):
@@ -1074,7 +1078,12 @@ def cmd_classify(rpc, con, args):
         if a in klass:
             continue
         unl += 1
-        if txt is None or txt == a:
+        if is20 is None and txf is None:
+            # discovered by the log scan but not yet attributed or probed --
+            # we know it minted, and nothing else. Say so rather than guess.
+            setk(a, "Unclassified", "discovered by mint scan; launcher not yet "
+                                    "resolved and metadata not yet probed")
+        elif txt is None or txt == a:
             setk(a, INDEPENDENT, f"direct deployment by EOA {txf} "
                                  f"(first-mint tx has to={'null' if not txt else 'self'}); "
                                  f"no factory, no infra-linked deployer")
