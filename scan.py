@@ -1,51 +1,84 @@
 #!/usr/bin/env python3
 """
-Find the first ERC-20 tokens ever created on Robinhood Chain (chain ID 4663).
+An index of every ERC-20 on Robinhood Chain (chain ID 4663), keyed on the
+wallet that actually launched each token.
 
-Strategy
---------
-Nearly every ERC-20 emits a Transfer event from the zero address (a mint) at or
-near deployment. So instead of walking every block, we scan `eth_getLogs` from
-genesis for Transfer topics with `from == 0x0`, and record the first block in
-which each contract address ever appears. That ordering is the birth order of
-tokens on the chain.
+Why this exists
+---------------
+Launchpads deploy tokens via CREATE2, so the *contract creator* recorded
+on-chain is the launchpad, not the person. Block explorers report this
+faithfully and therefore uselessly: Blockscout names the NOXA Fun contract as
+the creator of all 3,276 tokens launched through it, and Pons as the creator of
+its 167,000+. "Contracts created by this wallet" returns an empty list for even
+the most prolific launcher.
 
-Why not just scan for contract-creation transactions?
-  - Tokens deployed by a factory (Uniswap pools, launchpads, CREATE2 deployers)
-    do NOT appear as top-level `to == null` transactions, so you'd miss them.
-  - The log scan catches both cases.
+The human is the transaction SENDER:
 
-...but a token that deploys without ever minting is invisible to the log scan,
-so we ALSO run a second pass over block bodies looking for `to == null`
-top-level contract creations, and reconcile the two sets. See `pass-b`.
+    tx.from  ->  the human who clicked launch      (stored as first_tx_from)
+    tx.to    ->  the launchpad they clicked it on  (stored as first_tx_to)
+    creator  ->  always the launchpad. useless.
 
-ERC-721 uses the same Transfer topic, so we filter it out: ERC-20 Transfer has
-3 topics and a 32-byte data payload; ERC-721 has 4 topics and empty data.
+Indexing first_tx_from restores the "dev's previous deployments" lookup that
+EVM explorers cannot answer.
 
-Everything is checkpointed to SQLite (`out/scan.db`) after every chunk, so any
+How tokens are found
+--------------------
+Pass A (primary): `eth_getLogs` from genesis for Transfer with `from == 0x0`
+(a mint), recording the first block each contract appears in. That is birth
+order. It catches factory- and launchpad-deployed tokens, which a `to == null`
+contract-creation scan would miss entirely -- and that is most memecoins.
+
+ERC-721 shares the Transfer topic, so it is filtered out: ERC-20 Transfer has
+3 topics and a >=32-byte data payload; ERC-721 has 4 topics and empty data.
+
+Pass B (reconciliation): walks block bodies for top-level `to == null`
+creations. This catches tokens that deploy WITHOUT ever minting, which Pass A
+cannot see by construction -- it found a USDG at block 56 with totalSupply()==0,
+older than anything in the mint scan. Scoped to the pre-launch era; chain-wide
+would take ~117h at the measured ceiling. Neither pass subsumes the other.
+
+Everything checkpoints to SQLite (out/scan.db) after every chunk, so any
 subcommand can be killed and resumed without redoing work.
 
-Empirically established limits on the public endpoint (see `phase1`):
-  - `eth_getLogs` has NO block-range cap, but rejects queries matching
-    >10,000 logs ("logs matched by query exceeds limit of 10000").
-  - Batch JSON-RPC works up to ~100 sub-requests; 500 is refused with 429.
-  - A default urllib/python User-Agent gets HTTP 403. A curl-ish UA works.
+Endpoint limits, calibrated empirically (see the `phase1` subcommand)
+--------------------------------------------------------------------
+  - eth_getLogs has NO block-range cap. It caps on RESULTS: 10,000 logs
+    ("logs matched by query exceeds limit of 10000").
+  - The rate limiter is a per-IP token bucket priced by METHOD COST, not
+    request count. Batched sub-request caps differ per method:
+        eth_call                25    (~200 sub-req/s)
+        eth_getBlockByNumber    10    (~118 full blocks/s)
+    An over-large batch is refused no matter how long you wait -- the fix is a
+    smaller batch, not a longer sleep.
+  - Parallel connections LOWER throughput (3 threads: 68 blk/s vs 118 serial).
+    Keep this serial.
+  - A default urllib/python User-Agent gets HTTP 403. A curl-like UA works.
 
 Usage
 -----
-    python -m venv .venv && .venv/bin/pip install requests
-    .venv/bin/python first_tokens_robinhood_chain.py phase1
-    .venv/bin/python first_tokens_robinhood_chain.py pass-a --end 2000000
-    .venv/bin/python first_tokens_robinhood_chain.py pass-b --end 1000000
-    .venv/bin/python first_tokens_robinhood_chain.py meta
-    .venv/bin/python first_tokens_robinhood_chain.py creators
-    .venv/bin/python first_tokens_robinhood_chain.py report
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+    .venv/bin/python scan.py phase1            # verify chain, probe limits
+    .venv/bin/python scan.py pass-a --end 50500000
+    .venv/bin/python scan.py pass-b --end 65000
+    .venv/bin/python scan.py meta              # name/symbol/decimals/supply
+    .venv/bin/python scan.py creators          # resolves first_tx_from
+    .venv/bin/python scan.py classify
+    .venv/bin/python scan.py enrich --limit 40
+    .venv/bin/python scan.py mcap
+    .venv/bin/python scan.py export            # -> data/*.csv
+    .venv/bin/python scan.py clusters          # top launchpads / deployers
+    .venv/bin/python scan.py status
 
-    # Use your own RPC (recommended -- the public endpoint will rate-limit):
-    ... --rpc https://robinhood-mainnet.g.alchemy.com/v2/YOUR_KEY
+    # Use your own RPC if you have one -- the public endpoint rate-limits hard:
+    ... --rpc https://your-endpoint/v2/YOUR_KEY
+
+Classification anchors (launchpads, bridges, issuer EOAs) live in
+config/known_addresses.json with the evidence for each. Labels derive from
+on-chain relationships -- owner() matching, first_tx_to clustering, deployer
+population statistics -- never from a token's name.
 
 READ-ONLY: this program only ever issues eth_call / eth_get* / eth_chainId.
-It never builds, signs, or sends a transaction and holds no keys.
+It never builds, signs, or sends a transaction, and holds no keys.
 """
 
 import argparse
