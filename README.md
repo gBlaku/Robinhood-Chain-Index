@@ -31,26 +31,41 @@ tx.to    ←  the launchpad they clicked it on  (0xd9ec2db5…)
 creator  ←  always the launchpad. useless.
 ```
 
-This repo indexes `first_tx_from` for every token on the chain. So the question that explorers can't answer becomes one line:
+This repo indexes `first_tx_from` for every token on the chain. Hand it a token address and it resolves the launcher, then lists everything else that wallet has launched:
 
-```sql
-SELECT symbol, name, first_block, address
-FROM token
-WHERE first_tx_from = '0xcdfc08a1c1fbafb355645e5ddc32122e5716ca90'
-ORDER BY first_block;
+```console
+$ scan.py launcher 0x020bfc650a365f8bb26819deaabf3e21291018b4
+
+0x020bfc650a365f8bb26819deaabf3e21291018b4 is a token: CASHCAT (Cash Cat)
+  explorers report creator : 0xd9ec2db5f3d1b236843925949fe5bd8a3836fccb   <- the launchpad, not a person
+  actual launcher (tx.from): 0xcdfc08a1c1fbafb355645e5ddc32122e5716ca90
+
+0xcdfc08a1c1fbafb355645e5ddc32122e5716ca90 launched 7 token(s):
+
+      block  when              symbol         via          address
+     71,699  2026-06-17 14:04  SHR            NOXA Fun     0xe8dfea4ce952be956fad851fc042c7bfb4129271
+     73,889  2026-06-17 14:53  TH             NOXA Fun     0xf16a1a03e81f4d3e58d895ee18ec41e6b319f9df
+     75,571  2026-06-17 15:28  AIMLESS        NOXA Fun     0x8d05f9ca5c1c58b02ee74330b67d1b7e92f80612
+     76,761  2026-06-17 15:53  LCH            NOXA Fun     0xc643afa888ad6e1025363e86de94d37373e7b22a
+     79,013  2026-06-17 17:03  HB             NOXA Fun     0x15b82256c8ee8308c0f4391710cffabdadd663a5
+     88,836  2026-06-18 20:01  CASHCAT        NOXA Fun     0x020bfc650a365f8bb26819deaabf3e21291018b4
+     88,907  2026-06-18 20:05  TEST           NOXA Fun     0x25267b0960822d8e99511673115322c07ec8e8ee
+
+  nonce=662  balance=0.0065 ETH
 ```
 
-```
-SHR       SHERWOOD                    71699   0xe8dfea4ce952be956fad851fc042c7bfb4129271
-TH        Throbbin Hood               73889   0xf16a1a03e81f4d3e58d895ee18ec41e6b319f9df
-AIMLESS   AIMLESS                     75571   0x8d05f9ca5c1c58b02ee74330b67d1b7e92f80612
-LCH       Larry the Cucumber Hood     76761   0xc643afa888ad6e1025363e86de94d37373e7b22a
-HB        Hood Bridge                 79013   0x15b82256c8ee8308c0f4391710cffabdadd663a5
-CASHCAT   Cash Cat                    88836   0x020bfc650a365f8bb26819deaabf3e21291018b4   ← $200M
-TEST      test                        88907   0x25267b0960822d8e99511673115322c07ec8e8ee
+CASHCAT was **attempt #6**. SHERWOOD, Throbbin Hood, AIMLESS, Larry the Cucumber Hood and Hood Bridge are all dead — no price, no listing — and the same wallet launched another token four minutes after CASHCAT. None of that is visible on any explorer.
+
+Contrast MARIAN, the chain's first independent launch:
+
+```console
+$ scan.py launcher 0x937933e11ad6307ae0d8b8115986e91734be2d5c
+0x937933e11ad6307ae0d8b8115986e91734be2d5c launched 1 token(s):
+     58,539  2026-06-15 15:00  MARIAN         direct       0x01637b14b7378b99de75a64d50656d98488d9a4d
+  nonce=114  balance=1.7514 ETH
 ```
 
-CASHCAT was attempt #6. The five before it are all dead — no price, no listing — and the same wallet launched another token four minutes after CASHCAT. None of that is visible on any explorer.
+One token, direct deploy, no launchpad. A different kind of actor entirely — and that difference is invisible without launcher attribution.
 
 ## Quick start
 
@@ -62,6 +77,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scan.py creators        # ← resolves first_tx_from. the important one.
 .venv/bin/python scan.py classify
 .venv/bin/python scan.py export
+
+.venv/bin/python scan.py launcher 0x...     # the lookup explorers can't do
 ```
 
 Or skip all that and read [`data/all_tokens.csv`](data/all_tokens.csv).

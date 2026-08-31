@@ -106,7 +106,6 @@ SEL_NAME = "0x06fdde03"
 SEL_SYMBOL = "0x95d89b41"
 SEL_DECIMALS = "0x313ce567"
 SEL_TOTAL_SUPPLY = "0x18160ddd"
-SEL_BALANCE_OF = "0x70a08231"   # balanceOf(address) -- used by pool_tvl()
 
 # Uniswap V2 PairCreated(address,address,address,uint256)
 PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
@@ -290,10 +289,6 @@ def topic_to_addr(topic):
     if not topic or len(topic) < 42:
         return None
     return "0x" + topic[-40:].lower()
-
-
-def addr_arg(addr):
-    return addr.lower().replace("0x", "").rjust(64, "0")
 
 
 # ---------- storage ----------
@@ -744,6 +739,9 @@ UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba"
 SEL_GET_RESERVES = "0x0902f1ac"
 SEL_TOKEN0 = "0x0dfe1681"
 SEL_TOKEN1 = "0xd21220a7"
+
+
+# ---------- phase 4 helpers: pools, balances ----------
 
 
 def as_topic(addr):
@@ -1242,6 +1240,52 @@ def cmd_export(rpc, con, args):
     print(f"wrote {p2} ({n2} rows)")
 
 
+def cmd_launcher(rpc, con, args):
+    """Every token a wallet has launched -- the lookup explorers cannot do.
+
+    Keyed on first_tx_from (the transaction sender), not the contract creator,
+    because for any launchpad-deployed token the creator is the launchpad.
+    Pass a wallet to list its launches, or a token address to identify its
+    launcher and then list everything else that wallet has launched.
+    """
+    q = (args.address or "").lower().strip()
+    if not q.startswith("0x") or len(q) != 42:
+        print("usage: scan.py launcher <wallet-or-token-address>", file=sys.stderr)
+        return
+
+    # If given a token, resolve to its launcher first.
+    row = con.execute(
+        "SELECT symbol, name, first_tx_from, first_tx_to FROM token WHERE address=?",
+        (q,)).fetchone()
+    if row and row[2]:
+        print(f"{q} is a token: {row[0]} ({row[1]})")
+        print(f"  explorers report creator : {row[3] or '(direct deploy)'}"
+              f"   <- the launchpad, not a person")
+        print(f"  actual launcher (tx.from): {row[2]}")
+        q = row[2]
+        print()
+
+    launches = con.execute("""
+        SELECT first_block, first_ts, symbol, name, address, first_tx_to, klass
+        FROM token WHERE first_tx_from = ? ORDER BY first_block""", (q,)).fetchall()
+    if not launches:
+        print(f"no launches indexed for {q}")
+        cur = meta_get(con, "pass_a_cursor", "0")
+        print(f"(index covers blocks 0-{int(cur)-1:,}; a launch outside that "
+              f"range would not appear)")
+        return
+
+    lp = {a: v["label"] for a, v in ANCHORS["launchpads"].items()}
+    print(f"{q} launched {len(launches)} token(s):\n")
+    print(f"  {'block':>9}  {'when':<17} {'symbol':<14} {'via':<12} address")
+    for fb, ts, sym, nm, addr, txt, k in launches:
+        via = lp.get(txt, "direct" if not txt else "other")
+        print(f"  {fb:>9,}  {fmt_ts(ts)[:16]:<17} {str(sym)[:13]:<14} {via:<12} {addr}")
+
+    print(f"\n  nonce={int(rpc.call('eth_getTransactionCount', [q, 'latest']), 16)}"
+          f"  balance={int(rpc.call('eth_getBalance', [q, 'latest']), 16)/1e18:.4f} ETH")
+
+
 def cmd_status(rpc, con, args):
     a = int(meta_get(con, "pass_a_cursor", "0"))
     b = int(meta_get(con, "pass_b_cursor", "0"))
@@ -1260,7 +1304,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["phase1", "pass-a", "pass-b", "meta",
                                     "creators", "clusters", "classify", "enrich", "mcap",
-                                    "export", "status"])
+                                    "export", "launcher", "status"])
     ap.add_argument("--rpc", default=DEFAULT_RPC)
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--start", type=int, default=None)
@@ -1270,13 +1314,16 @@ def main():
                     help="pass-b blocks per checkpoint (split to RPC caps internally)")
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--limit", type=int, default=25, help="enrich: how many tokens")
+    ap.add_argument("address", nargs="?", default=None,
+                    help="launcher: wallet or token address to look up")
     args = ap.parse_args()
 
     rpc = Rpc(args.rpc, sleep=args.sleep)
     con = db_open(args.db)
     {"phase1": cmd_phase1, "pass-a": cmd_pass_a, "pass-b": cmd_pass_b,
      "meta": cmd_meta, "creators": cmd_creators, "clusters": cmd_clusters,
-     "classify": cmd_classify, "enrich": cmd_enrich, "mcap": cmd_mcap, "export": cmd_export,
+     "classify": cmd_classify, "enrich": cmd_enrich, "mcap": cmd_mcap,
+     "export": cmd_export, "launcher": cmd_launcher,
      "status": cmd_status}[args.cmd](rpc, con, args)
     con.close()
 
