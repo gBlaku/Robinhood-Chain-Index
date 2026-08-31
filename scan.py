@@ -717,8 +717,10 @@ def cmd_meta(rpc, con, args):
 
     done = set(r[0] for r in con.execute(
         "SELECT address FROM token WHERE is_erc20 IS NOT NULL").fetchall())
-    # rows seeded by `attribute` have is_erc20 NULL -> they get picked up here
-    work = [w for w in work if w[0] not in done]
+    # rows seeded by `attribute` have is_erc20 NULL -> they get picked up here.
+    # --max-block keeps metadata aligned with the attribution boundary instead
+    # of chasing the much larger discovery set.
+    work = [w for w in work if w[0] not in done and w[1] < args.max_block]
     print(f"metadata: {len(work)} addresses to probe "
           f"({len(done)} already done)", file=sys.stderr)
 

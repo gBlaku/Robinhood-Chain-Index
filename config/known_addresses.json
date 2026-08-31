@@ -7,7 +7,6 @@
     "never used as primary evidence.",
     "Verified 2026-08-30 against https://rpc.mainnet.chain.robinhood.com."
   ],
-
   "chain": {
     "chain_id": 4663,
     "rpc": "https://rpc.mainnet.chain.robinhood.com",
@@ -17,7 +16,6 @@
     "public_launch_block": 653325,
     "public_launch_note": "2026-07-01T00:00:00Z, found by binary search over block timestamps. Block 1 is 2026-04-30 -- the chain ran 62 days before the announced launch."
   },
-
   "infrastructure": {
     "0x0bd7d308f8e1639fab988df18a8011f41eacad73": {
       "label": "WETH",
@@ -32,7 +30,6 @@
       "evidence": "returned by router.factory(); emits PairCreated; allPairsLength() = 39941 at scan time."
     }
   },
-
   "launchpads": {
     "0x5818fddddb96bcd50bee4253f11b324e7dea961b": {
       "label": "launchpad-A",
@@ -48,9 +45,17 @@
       "first_token_block": 61869,
       "evidence": "owner() is the EOA that deployed the token named 'Testing NOXA Fun ;)' at block 61394. Appears as mint_to for 3276 tokens (bonding-curve style: the launchpad holds the supply).",
       "note": "This is the contract block explorers report as the CREATOR of every token launched through it, including CASHCAT."
+    },
+    "0x0c37a24f5d23a486fa692d1500881d698b1f77a4": {
+      "label": "Pons",
+      "operator": "0xda4bcee76b29efec9697fcf663601c2042043968",
+      "first_token_block": 8621658,
+      "evidence": "Deployed at block 8600612 (its first log is OwnershipTransferred to 0xda4bcee7...). Its first launch event, topic0 0x1461370115e1c2be..., created token 0xf4eaec43... named 'Test' at block 8621658, launched by the same wallet that deployed the launchpad -- the operator smoke-testing its own product, the same pattern as launchpad-A and NOXA Fun.",
+      "note": "The chain's dominant launchpad (167,000+ tokens per its own site). Confirmed by two independent methods: parsing its launch events, and brute-force checking all 10,102 tokens born between its deployment and the PONS token -- both return exactly 2 (Test, then PONS).",
+      "platform_token": "0x39dbed3a2bd333467115de45665cc57f813c4571 (PONS), launched block 8963150 by 0xb9f5f4ea... at nonce 0, i.e. a wallet created for the purpose",
+      "codebase_note": "Emits the same event signatures as NOXA Fun but is NOT the same contract: 24192 bytes vs 22811, different bytecode. Forks of a common template."
     }
   },
-
   "bridged": {
     "0xcdca5d374e46a6dddab50bd2d9acb8c796ec35c3": {
       "label": "canonical-asset minter",
@@ -59,22 +64,20 @@
       "caveat": "These tokens do NOT expose l1Address(), so they are not Arbitrum standard-gateway tokens. 'Bridged' here means custom mint/burn representation."
     }
   },
-
   "official_rwa": {
     "0x2b94105fff37630f98e1f24811dad588fc5c3a87": {
       "label": "Robinhood stock-token issuer EOA",
-      "evidence": "deployed 95 tokens starting block 34714, including 'Roundhill Weekly T-Bill ETF • Robinhood' (WEEK)."
+      "evidence": "deployed 95 tokens starting block 34714, including 'Roundhill Weekly T-Bill ETF \u2022 Robinhood' (WEEK)."
     },
     "0x4262efbd176f02824af27010bea218429c33c7e8": {
       "label": "wrapped stock-token factory",
       "evidence": "first_tx_to for 72 wrapped stock tokens (wWEEK, wAAOI). codelen 130 -- a minimal proxy factory."
     },
     "_name_marker": {
-      "pattern": "• Robinhood",
+      "pattern": "\u2022 Robinhood",
       "evidence": "RWA stock tokens carry this issuer suffix in name(). Used only as a SECONDARY signal alongside deployer identity."
     }
   },
-
   "deployment_routes": {
     "0x0000000071727de22e5e9d8baf0edac6f37da032": {
       "label": "ERC-4337 EntryPoint v0.7",
@@ -82,14 +85,12 @@
       "note": "Not a launchpad. Tokens routed through it are still attributed to their tx sender."
     }
   },
-
   "staging_window": {
     "end_block": 58539,
     "distinct_deployers": 16,
     "evidence": "In blocks 0-58539 (36 days, 2026-05-11 to 2026-06-15) exactly 16 distinct EOAs deployed any ERC-20. In the next 38000 blocks that jumps to 148 and the first public launchpad appears. Every token in that window is a partner/protocol deployment.",
     "note": "This is a population statistic, not a read on token names. IMPORTANT: it does NOT show the chain was permissioned. MARIAN (block 58539) was deployed by an EOA outside those 16 and succeeded, so nothing was blocking non-partner deployment. The low count reflects the chain being unannounced and undiscovered, not an allowlist. Treat this as evidence about who was PRESENT, not about who was PERMITTED."
   },
-
   "reference_points": {
     "0x01637b14b7378b99de75a64d50656d98488d9a4d": {
       "label": "MARIAN / Lady Marian -- first independent launch",
@@ -106,7 +107,6 @@
       "note": "Distinct contract from the USDG at block 433 that did mint."
     }
   },
-
   "endpoint_limits": {
     "_comment": "Empirically calibrated. These make the difference between a 100-minute scan and a 100-hour one.",
     "getlogs_block_range_cap": null,
