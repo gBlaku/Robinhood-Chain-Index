@@ -1270,6 +1270,31 @@ def cmd_export(rpc, con, args):
                                   r[19], notes]])
             n2 = i
     print(f"wrote {p2} ({n2} rows)")
+    verify_csv(p1, p2)
+
+
+def verify_csv(*paths):
+    """Published CSVs must be clean text.
+
+    Token names are attacker-controlled, so every export pulls fresh untrusted
+    strings. This asserts the sanitiser actually held rather than trusting that
+    it did: no NUL, no control bytes, no cell that a spreadsheet would execute.
+    """
+    bad = False
+    for path in paths:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        nul = raw.count(bytes([0]))
+        ctrl = sum(1 for b in raw if b < 32 and b not in (9, 10, 13))
+        formula = sum(1 for line in raw.split(b"\n")[1:]
+                      for cell in line.split(b",")
+                      if cell[:1] in (b"=", b"+", b"@"))
+        ok = (nul == 0 and ctrl == 0 and formula == 0)
+        bad = bad or not ok
+        print(f"  integrity {os.path.basename(path)}: NUL={nul} control={ctrl} "
+              f"formula_cells={formula} [{'OK' if ok else 'FAIL'}]")
+    if bad:
+        raise SystemExit("refusing to ship: CSV contains unsanitised content")
 
 
 def cmd_launcher(rpc, con, args):
