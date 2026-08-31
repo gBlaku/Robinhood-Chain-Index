@@ -112,6 +112,11 @@ PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31a
 
 KNOWN_WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"  # per brief, sanity check
 
+# eth_getLogs refuses >10,000 results. Aim just under it: the limiter counts
+# requests, so an under-filled request is wasted throughput. Leaving headroom
+# absorbs density spikes without tripping the cap and paying for a retry.
+LOG_TARGET = 8500
+
 
 class RpcError(Exception):
     pass
@@ -556,9 +561,17 @@ def cmd_pass_a(rpc, con, args):
               f"{rate:,.0f} blk/s | delay={rpc.delay:.2f} 429s={rpc.n_429}",
               file=sys.stderr)
 
-        # grow the chunk back if we're comfortably under the 10k result cap
-        if len(logs) < 2500 and chunk < args.chunk:
-            chunk = min(int(chunk * 1.5) + 1, args.chunk)
+        # The endpoint's binding constraint is getLogs REQUESTS per second, not
+        # blocks -- and each request may return up to 10,000 logs. So the goal is
+        # to keep every request as close to that cap as possible: a chunk that
+        # returns 4k logs wastes half the request. Size proportionally toward a
+        # target just under the cap, damped to avoid oscillating into failures.
+        if logs:
+            ideal = chunk * (LOG_TARGET / max(len(logs), 1))
+            chunk = int(max(chunk * 0.5, min(ideal, chunk * 2.0, args.chunk)))
+            chunk = max(chunk, 1)
+        elif chunk < args.chunk:
+            chunk = min(chunk * 4, args.chunk)   # empty region: stride out fast
         cursor = hi + 1
 
     print(f"pass A done: {n_new} new addresses, cursor={end+1}, "
@@ -661,6 +674,7 @@ def cmd_meta(rpc, con, args):
 
     done = set(r[0] for r in con.execute(
         "SELECT address FROM token WHERE is_erc20 IS NOT NULL").fetchall())
+    # rows seeded by `attribute` have is_erc20 NULL -> they get picked up here
     work = [w for w in work if w[0] not in done]
     print(f"metadata: {len(work)} addresses to probe "
           f"({len(done)} already done)", file=sys.stderr)
@@ -1343,6 +1357,52 @@ def cmd_launcher(rpc, con, args):
           f"  balance={int(rpc.call('eth_getBalance', [q, 'latest']), 16)/1e18:.4f} ETH")
 
 
+def cmd_attribute(rpc, con, args):
+    """Populate launcher attribution WITHOUT the per-token metadata calls.
+
+    `meta` costs 4 eth_calls per token (~50 tokens/s against the public
+    endpoint), which is hours at chain scale. But launcher attribution -- the
+    thing explorers cannot do, and the reason this index exists -- only needs
+    the first-mint transaction, which is already in mint_first from the log
+    scan. So seed token rows straight from SQL and resolve senders in batches.
+
+    Metadata (name/symbol/decimals/supply) is a separate, resumable backfill:
+    run `meta` afterwards for as long as you care to. Attribution works without
+    it.
+    """
+    t0 = time.time()
+    con.execute("""
+        INSERT OR IGNORE INTO token
+            (address, first_block, first_tx, mint_to, source, creation_method)
+        SELECT m.address, m.first_block, m.tx_hash, m.mint_to, 'mint', 'unknown'
+        FROM mint_first m""")
+    con.commit()
+    seeded = con.execute("SELECT COUNT(*) FROM token").fetchone()[0]
+    print(f"token rows seeded from mint_first: {seeded:,} "
+          f"({time.time()-t0:.1f}s)", file=sys.stderr)
+
+    # backfill block timestamps we don't have yet (batched, cheap)
+    missing_ts = [r[0] for r in con.execute(
+        "SELECT DISTINCT first_block FROM token WHERE first_ts IS NULL")]
+    if missing_ts:
+        print(f"resolving {len(missing_ts):,} block timestamps", file=sys.stderr)
+        for i in range(0, len(missing_ts), 500):
+            grp = missing_ts[i:i + 500]
+            tss = block_ts_bulk(rpc, grp)
+            con.executemany("UPDATE token SET first_ts=? WHERE first_block=?",
+                            [(v, k) for k, v in tss.items()])
+            con.commit()
+            if (i // 500) % 10 == 0:
+                print(f"  ts {min(i+500,len(missing_ts)):,}/{len(missing_ts):,}",
+                      file=sys.stderr)
+
+    cmd_creators(rpc, con, args)
+    done = con.execute(
+        "SELECT COUNT(*) FROM token WHERE first_tx_from IS NOT NULL").fetchone()[0]
+    print(f"attribution complete: {done:,}/{seeded:,} tokens have a launcher "
+          f"({time.time()-t0:.0f}s total)", file=sys.stderr)
+
+
 def cmd_status(rpc, con, args):
     a = int(meta_get(con, "pass_a_cursor", "0"))
     b = int(meta_get(con, "pass_b_cursor", "0"))
@@ -1361,7 +1421,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["phase1", "pass-a", "pass-b", "meta",
                                     "creators", "clusters", "classify", "enrich", "mcap",
-                                    "export", "launcher", "status"])
+                                    "export", "attribute", "launcher", "status"])
     ap.add_argument("--rpc", default=DEFAULT_RPC)
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--start", type=int, default=None)
@@ -1380,7 +1440,8 @@ def main():
     {"phase1": cmd_phase1, "pass-a": cmd_pass_a, "pass-b": cmd_pass_b,
      "meta": cmd_meta, "creators": cmd_creators, "clusters": cmd_clusters,
      "classify": cmd_classify, "enrich": cmd_enrich, "mcap": cmd_mcap,
-     "export": cmd_export, "launcher": cmd_launcher,
+     "export": cmd_export, "attribute": cmd_attribute,
+     "launcher": cmd_launcher,
      "status": cmd_status}[args.cmd](rpc, con, args)
     con.close()
 
