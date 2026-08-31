@@ -269,11 +269,40 @@ def decode_string(hexdata):
                 length = int.from_bytes(raw[offset:offset + 32], "big")
                 if 0 < length <= len(raw) - offset - 32:
                     s = raw[offset + 32: offset + 32 + length]
-                    return s.decode("utf-8", errors="replace").strip("\x00") or None
+                    return sanitize_text(s.decode("utf-8", errors="replace"))
         except (ValueError, IndexError):
             pass
     # bytes32-style name/symbol (older tokens, e.g. MKR-style)
-    return raw.rstrip(b"\x00").decode("utf-8", errors="replace").strip() or None
+    return sanitize_text(raw.rstrip(b"\x00").decode("utf-8", errors="replace"))
+
+
+_CTRL = {c: None for c in range(32) if c not in (9,)} | {0x7f: None}
+_CTRL.update({c: None for c in range(0x80, 0xa0)})
+
+
+def sanitize_text(v, limit=200):
+    """Token name()/symbol() are attacker-controlled. Never trust them.
+
+    Strips C0/C1 control characters (NUL, ANSI escapes, bidi overrides can all
+    ride in here) and caps length. A token named with escape sequences would
+    otherwise corrupt any terminal or CSV that renders this dataset.
+    """
+    if v is None:
+        return None
+    v = str(v).translate(_CTRL).strip()
+    return v[:limit] or None
+
+
+def csv_safe(v):
+    """Neutralise spreadsheet formula injection.
+
+    A name starting with = + - @ is executed as a formula by Excel/Sheets on
+    open. Prefixing with an apostrophe renders it inert while keeping it
+    readable. This dataset contains at least one such name (@hooddeploys).
+    """
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
 
 
 def decode_uint(hexdata):
@@ -1200,7 +1229,8 @@ def cmd_export(rpc, con, args):
                    total_supply,deployer,first_tx_to,mint_to,creation_method,
                    source,first_tx,evidence
             FROM token ORDER BY first_block, address"""), 1):
-            w.writerow([i, r[0], fmt_ts(r[1])] + list(r[2:]))
+            w.writerow([csv_safe(sanitize_text(x) if isinstance(x, str) else x)
+                        for x in ([i, r[0], fmt_ts(r[1])] + list(r[2:]))])
             n = i
     print(f"wrote {p1} ({n} rows)")
 
@@ -1231,11 +1261,13 @@ def cmd_export(rpc, con, args):
                     fdv = part.split("=", 1)[1]
                 if part.startswith("pool_weth_usd="):
                     pool_usd = part.split("=", 1)[1]
-            w.writerow([i, r[0], fmt_ts(r[1]), r[2], r[3], r[4], r[5], r[6],
-                        f"{supply:.0f}", r[9], r[10], fmt_ts(r[11]), r[12],
-                        r[13], pool_usd, fdv,
-                        f"{r[16]:.4f}" if r[16] is not None else "",
-                        r[17] or "unknown", r[18] or "unknown", r[19], notes])
+            w.writerow([csv_safe(sanitize_text(x) if isinstance(x, str) else x)
+                        for x in [i, r[0], fmt_ts(r[1]), r[2], r[3], r[4], r[5],
+                                  r[6], f"{supply:.0f}", r[9], r[10],
+                                  fmt_ts(r[11]), r[12], r[13], pool_usd, fdv,
+                                  f"{r[16]:.4f}" if r[16] is not None else "",
+                                  r[17] or "unknown", r[18] or "unknown",
+                                  r[19], notes]])
             n2 = i
     print(f"wrote {p2} ({n2} rows)")
 
