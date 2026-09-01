@@ -1006,6 +1006,12 @@ def cmd_classify(rpc, con, args):
     for (a, sym, nm, fb, txf, txt, mto, dep, cm, is20) in rows:
         sym = sym or ""
         nm = nm or ""
+        if is20 == 0:
+            # Probed and it has no totalSupply(). It is a contract the creation
+            # pass found, not a token, so no token bucket applies to it.
+            setk(a, "Not an ERC-20", "probed: totalSupply() does not respond; "
+                                     "found by the contract-creation pass")
+            continue
         if a == KNOWN_WETH:
             setk(a, INFRA, "canonical WETH for the chain's ETH gas token; "
                            "name()=WETH; designated in brief"); continue
@@ -1041,7 +1047,11 @@ def cmd_classify(rpc, con, args):
             by_dep.setdefault(dep, []).append(a)
     propagated = 0
     for dep, addrs in by_dep.items():
-        labs = {klass[x] for x in addrs if x in klass}
+        # A sibling that is not a token says nothing about what this one is.
+        # Leaving it in let the seed below fall through to Infrastructure and
+        # silently reclassified the chain's first independent launch, whose
+        # deployer also created a pool contract one block later.
+        labs = {klass[x] for x in addrs if x in klass} - {"Not an ERC-20"}
         if not labs or INDEPENDENT in labs:
             continue
         seed = (OFFICIAL if OFFICIAL in labs else
@@ -1304,7 +1314,7 @@ def cmd_export(rpc, con, args):
             SELECT first_block,first_ts,symbol,name,address,klass,decimals,
                    total_supply,deployer,first_tx_to,mint_to,creation_method,
                    source,first_tx,evidence
-            FROM token WHERE first_tx_from IS NOT NULL
+            FROM token WHERE first_tx_from IS NOT NULL AND is_erc20 = 1
             ORDER BY first_block, address"""), 1):
             w.writerow([csv_safe(sanitize_text(x) if isinstance(x, str) else x)
                         for x in ([i, r[0], fmt_ts(r[1])] + list(r[2:]))])

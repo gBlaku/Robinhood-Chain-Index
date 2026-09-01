@@ -75,10 +75,16 @@ block timestamps puts at block 653,325. Early blocks are about 11 seconds apart
 rather than the advertised 100ms, because Nitro only makes blocks when there's
 something to put in them.
 
-**The first 27 tokens are all infrastructure.** WETH, Uniswap V2 pairs, bridged
-LINK and wstETH, Paxos USDG, Ethena, Lido, tokenised equities. The first token
-anyone actually launched is MARIAN at block 58,539, deployed straight from an
-EOA with ownership renounced, 16 days before the public launch.
+**The first 51 tokens are all infrastructure.** WETH, Uniswap V2 pairs, bridged
+LINK and wstETH, Paxos USDG, Ethena, Lido, tokenised equities. Independent
+launches before them: zero. The first token anyone actually launched is MARIAN
+at block 58,539, deployed straight from an EOA with ownership renounced, 16 days
+before the public launch.
+
+Worth splitting that 51 apart, because it is the reconciliation in miniature:
+**27 of them minted**, so a mint-log scan finds those. The other **24 never
+minted at all** and are only visible to the contract-creation pass. Quote 27 and
+you are quoting what one method can see, not what exists.
 
 **The two ways of finding tokens disagree, and both are correct.** Scanning mint
 logs catches factory-deployed tokens. Scanning for contract creations catches
