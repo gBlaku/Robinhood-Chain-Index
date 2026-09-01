@@ -166,10 +166,12 @@ oversell what this can actually answer.
 |---|---|---|
 | Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,345 · **635,045 tokens** (in `scan.db`, not shipped) |
 | Attribution | who launched it (`first_tx_from`) | blocks 0 to 9,000,000 · **125,961 tokens** |
-| Metadata | name, symbol, decimals, supply | backfilling |
+| Metadata | name, symbol, decimals, supply | blocks 0 to 9,000,000 · **126,417 tokens** |
 
-Attribution is always a contiguous prefix, and `launcher` tells you where the
-boundary is when it can't answer, instead of returning nothing. Returning
+Attribution and metadata now cover the same range, so a lookup inside it returns
+the launcher, the token name and the launchpad. Attribution is always a
+contiguous prefix, and `launcher` tells you where the boundary is when it can't
+answer, instead of returning nothing. Returning
 nothing would read as "this account has never launched anything", which is the
 worst possible way for a due diligence tool to fail.
 
