@@ -134,10 +134,19 @@ class RpcError(Exception):
 
 
 class Rpc:
-    """JSON-RPC client with an adaptive throttle.
+    """JSON-RPC client with per-request retry and per-method batch caps.
 
-    The public endpoint 429s aggressively on expensive calls, so we keep a
-    per-call delay that grows on 429 and slowly decays on sustained success.
+    The public endpoint 429s aggressively on expensive calls. Two mechanisms
+    answer that, and neither is an adaptive per-call delay: `_post` retries a
+    refused request with exponential backoff, and `safe_batch` splits a batch
+    to the per-method sub-request cap the endpoint will accept. `delay` is a
+    fixed pacing knob set from --sleep, not something this class tunes.
+
+    An earlier docstring here described a delay that grew on 429 and decayed on
+    success. No such code existed; `_ok_streak`, `min_delay` and `max_delay`
+    were left over from a design that was never finished. Sustained throughput
+    against this endpoint degrades over a long run, so the batch cap is the
+    lever that actually works -- see the note on `batch_caps`.
     """
 
     def __init__(self, url, sleep=0.0, verbose=True):
@@ -161,9 +170,18 @@ class Rpc:
         # tops out at 25 sub-requests (~200 sub-req/s); eth_getBlockByNumber
         # with full tx bodies tops out at 10 (~118 blk/s). Opening parallel
         # connections does not raise the ceiling -- it lowers it.
+        # Re-measured over a long run, 600 tx per setting, when sustained
+        # throughput had decayed to ~6/s at the old cap of 15:
+        #     cap  5 ->  3.6 tx/s,  0 429s   (too many round trips)
+        #     cap 10 -> 21.9 tx/s, 32 429s   <- best
+        #     cap 15 -> 14.9 tx/s, 77 429s   <- previous setting, worst of the three
+        #     cap 25 -> 16.0 tx/s,  0 429s
+        # The largest cap the endpoint accepts is not the fastest: 15 draws the
+        # most refusals and pays for them in retries. Tuned for throughput, not
+        # for the ceiling.
         self.batch_caps = {"eth_call": 25, "eth_getBlockByNumber": 10,
                            "eth_getTransactionReceipt": 10,
-                           "eth_getTransactionByHash": 15}
+                           "eth_getTransactionByHash": 10}
         self.default_cap = 10
 
     def _post(self, payload, timeout, retries):
