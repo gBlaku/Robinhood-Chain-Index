@@ -100,6 +100,17 @@ DB_PATH = os.path.join(OUT_DIR, "scan.db")
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_TOPIC = "0x" + "00" * 32
+
+# ERC-4337 account abstraction. When a token is deployed through a UserOperation
+# the transaction is submitted by a *bundler*, so tx.from is the bundler and not
+# the launcher -- the same error explorers make with launchpads, one layer up.
+# The real account is the `sender` field of the UserOperationEvent that
+# EntryPoint emits for each operation in the batch. The EntryPoint addresses
+# themselves are anchors and live in config/known_addresses.json; only the event
+# signature, which is fixed by the protocol, is hardcoded here.
+# UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)
+USEROP_EVENT_TOPIC = \
+    "0x49628fd1471006c1482da88028e9ce4dbb080b815c9b0344d39e5a8e6ec1419f"
 ZERO_ADDR = "0x" + "00" * 20
 
 SEL_NAME = "0x06fdde03"
@@ -383,6 +394,22 @@ CREATE TABLE IF NOT EXISTS token (
     minter        TEXT        -- resolved label for first_tx_to, if known
 );
 
+-- On-demand attribution, resolved live by `launcher` for tokens the batch
+-- passes have not reached. Deliberately NOT the `token` table: `token` is a
+-- reproducible function of the batch pipeline and is what `export` ships, so
+-- ad-hoc lookups must not leak scattered, metadata-less rows into a CSV whose
+-- stated coverage is a contiguous block range.
+CREATE TABLE IF NOT EXISTS live_attribution (
+    address       TEXT PRIMARY KEY,
+    first_block   INTEGER,
+    first_tx      TEXT,
+    first_tx_from TEXT,       -- the launcher: who sent the deploying tx
+    first_tx_to   TEXT,       -- the launchpad/factory that tx called
+    symbol        TEXT,
+    name          TEXT,
+    resolved_at   INTEGER     -- unix ts of the lookup that resolved this
+);
+
 -- Phase 4/5 enrichment
 CREATE TABLE IF NOT EXISTS enrich (
     address        TEXT PRIMARY KEY,
@@ -418,7 +445,8 @@ def migrate(con):
     """CREATE TABLE IF NOT EXISTS won't add columns to an existing DB."""
     for table, cols in (
         ("token", [("first_tx_from", "TEXT"), ("first_tx_to", "TEXT"),
-                   ("minter", "TEXT"), ("klass", "TEXT"), ("evidence", "TEXT")]),
+                   ("minter", "TEXT"), ("klass", "TEXT"), ("evidence", "TEXT"),
+                   ("aa_sender", "TEXT")]),
         ("enrich", [("first_pool_ts", "INTEGER"), ("supply_at_deployer", "TEXT")]),
     ):
         have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -981,6 +1009,9 @@ SHARED_OWNER = ANCHORS["bridged"][CANONICAL_MINTER]["shared_owner"]
 STOCK_WRAP_FACTORY = "0x4262efbd176f02824af27010bea218429c33c7e8"
 STOCK_ISSUER_EOA = "0x2b94105fff37630f98e1f24811dad588fc5c3a87"
 AA_ENTRYPOINT = next(iter(ANCHORS["deployment_routes"]))
+# Every EntryPoint version, so a deployment through any of them is recognised
+# as account-abstracted and never credited to the bundler that relayed it.
+ENTRYPOINTS = {a: v["label"] for a, v in ANCHORS["deployment_routes"].items()}
 STAGING_END = ANCHORS["staging_window"]["end_block"]
 
 LAUNCHPADS = {a: f"{v['label']} ({a}, operator {v['operator']})"
@@ -997,6 +1028,10 @@ def cmd_classify(rpc, con, args):
         SELECT address,symbol,name,first_block,first_tx_from,first_tx_to,mint_to,
                deployer,creation_method,is_erc20
         FROM token""").fetchall()
+    # Resolved ERC-4337 senders, for evidence strings that would otherwise name
+    # the bundler as though it were the launcher.
+    aa_by_addr = dict(con.execute(
+        "SELECT address, aa_sender FROM token WHERE aa_sender IS NOT NULL"))
 
     klass, evid = {}, {}
 
@@ -1101,9 +1136,17 @@ def cmd_classify(rpc, con, args):
             setk(a, INDEPENDENT, f"direct deployment by EOA {txf} "
                                  f"(first-mint tx has to={'null' if not txt else 'self'}); "
                                  f"no factory, no infra-linked deployer")
-        elif txt == AA_ENTRYPOINT:
-            setk(a, INDEPENDENT, f"deployed via ERC-4337 EntryPoint {AA_ENTRYPOINT} "
-                                 f"(smart-account tx), origin EOA {txf}")
+        elif txt in ENTRYPOINTS:
+            # txf is the bundler that relayed the UserOperation, not the
+            # launcher. Name the smart account when userops has resolved it,
+            # and say plainly that we only have the bundler when it has not.
+            aa = aa_by_addr.get(a)
+            setk(a, INDEPENDENT,
+                 f"deployed via {ENTRYPOINTS[txt]} {txt} (smart-account tx); "
+                 + (f"UserOperation sender {aa}; relayed by bundler {txf}"
+                    if aa else
+                    f"launcher unresolved -- {txf} is the bundler that relayed "
+                    f"it, not the launcher; run `userops`"))
         else:
             setk(a, INDEPENDENT, f"deployed via contract {txt} by {txf}; that "
                                  f"contract is not a known infra factory")
@@ -1303,8 +1346,12 @@ def cmd_export(rpc, con, args):
     # and pushed the file past GitHub's 100MB limit without adding information.
     # The full discovery set lives in out/scan.db and is regenerable.
     p1 = os.path.join(DATA_DIR, "all_tokens.csv")
+    # `deployer` is tx.from as recorded. For an ERC-4337 deployment that is the
+    # bundler, so `launcher` carries the resolved account and is the column to
+    # group on; both ship, because collapsing them would hide the correction.
     cols = ["rank", "first_block", "first_ts_utc", "symbol", "name", "address",
-            "classification", "decimals", "total_supply", "deployer",
+            "classification", "decimals", "total_supply", "launcher",
+            "deployer", "aa_sender",
             "first_tx_to_factory", "mint_to", "creation_method", "detected_by",
             "first_mint_tx", "evidence"]
     n = 0
@@ -1312,7 +1359,8 @@ def cmd_export(rpc, con, args):
         w = csv.writer(fh); w.writerow(cols)
         for i, r in enumerate(con.execute("""
             SELECT first_block,first_ts,symbol,name,address,klass,decimals,
-                   total_supply,deployer,first_tx_to,mint_to,creation_method,
+                   total_supply,COALESCE(aa_sender,first_tx_from),deployer,
+                   aa_sender,first_tx_to,mint_to,creation_method,
                    source,first_tx,evidence
             FROM token WHERE first_tx_from IS NOT NULL AND is_erc20 = 1
             ORDER BY first_block, address"""), 1):
@@ -1398,6 +1446,193 @@ def verify_csv(*paths):
         raise SystemExit("refusing to ship: CSV contains unsanitised content")
 
 
+def first_mint_tx_live(rpc, address):
+    """Find the tx that first minted `address`, straight from the chain.
+
+    A full-range eth_getLogs is normally reckless, but this filter is pinned to
+    a single contract: the endpoint caps on *results* (10,000 logs), not on
+    block span, and one token has a handful of mint logs. Measured at 0.12s
+    across the whole chain. Returns (tx_hash, block) or None.
+    """
+    logs = rpc.call("eth_getLogs", [{
+        "fromBlock": "0x0", "toBlock": "latest", "address": address,
+        "topics": [TRANSFER_TOPIC, ZERO_TOPIC]}], retries=4)
+    if not logs:
+        return None
+    first = min(logs, key=lambda l: (int(l["blockNumber"], 16),
+                                     int(l.get("logIndex") or "0x0", 16)))
+    return first["transactionHash"], int(first["blockNumber"], 16)
+
+
+def resolve_launcher_live(rpc, con, address):
+    """Attribute one token on demand, for anything the batch pass has not reached.
+
+    Batch attribution is a contiguous prefix, so a token above its boundary is
+    discovered but has no launcher. Resolving a single one is cheap -- the mint
+    tx is usually already on record from the log scan, leaving one
+    eth_getTransactionByHash -- so the lookup should never answer "unknown"
+    merely because the backfill has not arrived yet. Returning nothing would
+    read as "this account has never launched anything", which is the worst way
+    for a due diligence tool to fail.
+
+    Caches into `live_attribution`, never into `token`: see the schema note.
+    Returns a dict, or None if the chain shows no mint for this address.
+    """
+    address = address.lower()
+    cols = ("address", "first_block", "first_tx", "first_tx_from",
+            "first_tx_to", "symbol", "name")
+    row = con.execute(f"SELECT {','.join(cols)} FROM live_attribution "
+                      "WHERE address=?", (address,)).fetchone()
+    if row:
+        return dict(zip(cols, row))
+
+    known = (con.execute("SELECT first_tx, first_block FROM token WHERE "
+                         "address=? AND first_tx IS NOT NULL",
+                         (address,)).fetchone()
+             or con.execute("SELECT tx_hash, first_block FROM mint_first "
+                            "WHERE address=?", (address,)).fetchone())
+    try:
+        if known and known[0]:
+            txh, blk = known[0], known[1]
+        else:
+            found = first_mint_tx_live(rpc, address)
+            if not found:
+                return None
+            txh, blk = found
+        tx = rpc.call("eth_getTransactionByHash", [txh], retries=4)
+        if not isinstance(tx, dict) or not tx.get("from"):
+            return None
+        if blk is None and tx.get("blockNumber"):
+            blk = int(tx["blockNumber"], 16)
+        meta = probe_token(rpc, address) or {}
+    except RpcError:
+        return None
+
+    rec = {"address": address, "first_block": blk, "first_tx": txh,
+           "first_tx_from": tx["from"].lower(),
+           "first_tx_to": (tx.get("to") or "").lower() or None,
+           "symbol": meta.get("symbol"), "name": meta.get("name")}
+    con.execute(
+        "INSERT OR REPLACE INTO live_attribution (address, first_block, "
+        "first_tx, first_tx_from, first_tx_to, symbol, name, resolved_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        tuple(rec[c] for c in cols) + (int(time.time()),))
+    con.commit()
+    return rec
+
+
+def userop_sender(logs, mint_log_index):
+    """The smart account whose UserOperation produced a given log.
+
+    A bundler batches many UserOperations into one transaction, so every token
+    in that batch shares a tx.from that belongs to the bundler rather than to
+    any of the people involved. EntryPoint emits UserOperationEvent *after* the
+    logs of the operation it describes, so the operation responsible for our
+    mint is the one whose event is the first to follow it.
+
+    Returns the sender address, or None if the batch cannot be attributed --
+    which is the honest answer, not a guess at the nearest candidate.
+    """
+    events = []
+    for l in logs or []:
+        topics = l.get("topics") or []
+        if len(topics) >= 3 and topics[0] == USEROP_EVENT_TOPIC:
+            li, sender = l.get("logIndex"), topic_to_addr(topics[2])
+            if li is None or sender is None:
+                continue
+            events.append((int(li, 16), sender))
+    if not events:
+        return None
+    if mint_log_index is None:
+        # No ordering information. Safe only when the batch held one operation.
+        return events[0][1] if len(events) == 1 else None
+    after = [(li, s) for li, s in events if li > mint_log_index]
+    return min(after)[1] if after else None
+
+
+def cmd_userops(rpc, con, args):
+    """Resolve the true launcher for tokens deployed via ERC-4337.
+
+    Without this, every token in a bundled UserOperation is credited to the
+    bundler. On this chain that put three bundlers at the top of the launcher
+    leaderboard, each with thousands of "launches" and a first_tx_to that is
+    exclusively EntryPoint -- a shape no human launcher has.
+
+    tx.from is kept as recorded; the resolved account goes in `aa_sender`, so
+    the raw observation and the interpretation stay separable.
+    """
+    eps = tuple(ENTRYPOINTS)
+    rows = con.execute(f"""
+        SELECT t.address, t.first_tx, m.log_index
+        FROM token t LEFT JOIN mint_first m ON m.address = t.address
+        WHERE t.first_tx_to IN ({','.join('?' * len(eps))})
+          AND t.aa_sender IS NULL AND t.first_tx IS NOT NULL
+        ORDER BY t.first_block""", eps).fetchall()
+    if not rows:
+        print("no unresolved ERC-4337 deployments", file=sys.stderr)
+        return
+    print(f"resolving {len(rows):,} ERC-4337 deployments", file=sys.stderr)
+
+    t0 = time.time()
+    done = ambiguous = failed = 0
+    for i in range(0, len(rows), 200):
+        grp = rows[i:i + 200]
+        # Several tokens can share one bundled transaction: fetch each once.
+        txs = sorted({r[1] for r in grp})
+        got = dict(zip(txs, rpc.safe_batch(
+            [("eth_getTransactionReceipt", [h]) for h in txs])))
+        upd = []
+        for addr, txh, li in grp:
+            rec = got.get(txh)
+            if not isinstance(rec, dict):
+                # Transient: the row keeps aa_sender NULL and is picked up by
+                # the next run. Counted apart from a receipt we did read and
+                # still could not attribute, which re-running will not fix.
+                failed += 1
+                continue
+            s = userop_sender(rec.get("logs"), li)
+            if s:
+                upd.append((s, addr))
+            else:
+                ambiguous += 1
+        con.executemany("UPDATE token SET aa_sender=? WHERE address=?", upd)
+        con.commit()
+        done += len(upd)
+        n = min(i + 200, len(rows))
+        rate = n / max(time.time() - t0, 1e-9)
+        print(f"  userops {n:,}/{len(rows):,} | {rate:.0f}/s | resolved {done:,}"
+              f" | ambiguous {ambiguous:,} | fetch-failed {failed:,}",
+              file=sys.stderr)
+    print(f"ERC-4337 resolution: {done:,} tokens re-attributed from bundler to "
+          f"smart account; {ambiguous:,} unattributable from their receipt; "
+          f"{failed:,} receipts unfetched (re-run to retry) "
+          f"({time.time()-t0:.0f}s)", file=sys.stderr)
+
+
+def route_label(addr, short=False):
+    """Human label for a first_tx_to: launchpad, EntryPoint, direct, or raw.
+
+    `short` returns a form that fits a table column; EntryPoint version labels
+    are too long to line up otherwise.
+    """
+    if not addr:
+        return "direct"
+    if addr in ANCHORS["launchpads"]:
+        return ANCHORS["launchpads"][addr]["label"]
+    if addr in ANCHORS["deployment_routes"]:
+        label = ANCHORS["deployment_routes"][addr]["label"]
+        return label.replace("ERC-4337 EntryPoint ", "ERC-4337 ") if short \
+            else label
+    return "other"
+
+
+def attribution_bounds(con):
+    """(attributed_through, discovered_through) -- the two coverage edges."""
+    att = meta_get(con, "attribution_through_block")
+    cur = int(meta_get(con, "pass_a_cursor", "1")) - 1
+    return (int(att) if att else 0), cur
+
+
 def cmd_launcher(rpc, con, args):
     """Every token a wallet has launched -- the lookup explorers cannot do.
 
@@ -1405,46 +1640,85 @@ def cmd_launcher(rpc, con, args):
     because for any launchpad-deployed token the creator is the launchpad.
     Pass a wallet to list its launches, or a token address to identify its
     launcher and then list everything else that wallet has launched.
+
+    A token above the attribution boundary is resolved live rather than missed.
+    The forward direction (token -> launcher) is therefore unbounded; the
+    reverse (launcher -> all their tokens) still needs the index, because logs
+    cannot be filtered by tx.from. The output says which one you are getting.
     """
     q = (args.address or "").lower().strip()
     if not q.startswith("0x") or len(q) != 42:
         print("usage: scan.py launcher <wallet-or-token-address>", file=sys.stderr)
         return
+    att, cur = attribution_bounds(con)
 
-    # If given a token, resolve to its launcher first.
+    # If given a token, resolve to its launcher: index first, chain second.
     row = con.execute(
-        "SELECT symbol, name, first_tx_from, first_tx_to FROM token WHERE address=?",
-        (q,)).fetchone()
+        "SELECT symbol, name, first_tx_from, first_tx_to, aa_sender FROM token "
+        "WHERE address=?", (q,)).fetchone()
     if row and row[2]:
-        print(f"{q} is a token: {row[0]} ({row[1]})")
-        print(f"  explorers report creator : {row[3] or '(direct deploy)'}"
-              f"   <- the launchpad, not a person")
-        print(f"  actual launcher (tx.from): {row[2]}")
-        q = row[2]
+        sym, nm, txfrom, txto, aa = row
+        print(f"{q} is a token: {sym} ({nm})")
+        what = ("the EntryPoint" if txto in ENTRYPOINTS else "the launchpad")
+        print(f"  explorers report creator : {txto or '(direct deploy)'}"
+              f"   <- {what}, not a person")
+        if aa:
+            # tx.from is the bundler here, so reporting it would repeat the
+            # explorers' mistake at the account-abstraction layer.
+            print(f"  submitted by (bundler)   : {txfrom}"
+                  f"   <- ERC-4337, also not a person")
+            print(f"  actual launcher          : {aa}   <- UserOperation sender")
+        else:
+            print(f"  actual launcher (tx.from): {txfrom}")
+        q = aa or txfrom
         print()
+    else:
+        rec = resolve_launcher_live(rpc, con, q)
+        if rec:
+            label = f"{rec['symbol']} ({rec['name']})" if rec["symbol"] else \
+                    "(metadata unavailable)"
+            print(f"{q} is a token: {label}")
+            print(f"  explorers report creator : "
+                  f"{rec['first_tx_to'] or '(direct deploy)'}"
+                  f"   <- the launchpad, not a person")
+            print(f"  actual launcher (tx.from): {rec['first_tx_from']}")
+            print(f"  resolved live from the chain at block "
+                  f"{rec['first_block']:,} (above the indexed boundary "
+                  f"{att:,})")
+            q = rec["first_tx_from"]
+            print()
 
+    # Reverse lookup spans both the batch index and anything resolved live.
     launches = con.execute("""
-        SELECT first_block, first_ts, symbol, name, address, first_tx_to, klass
-        FROM token WHERE first_tx_from = ? ORDER BY first_block""", (q,)).fetchall()
+        SELECT first_block, first_ts, symbol, name, address, first_tx_to, 0
+        FROM token WHERE COALESCE(aa_sender, first_tx_from) = ?
+        UNION
+        SELECT first_block, NULL, symbol, name, address, first_tx_to, 1
+        FROM live_attribution WHERE first_tx_from = ? AND address NOT IN
+            (SELECT address FROM token WHERE first_tx_from IS NOT NULL)
+        ORDER BY first_block""", (q, q)).fetchall()
     if not launches:
         print(f"no launches indexed for {q}")
-        att = meta_get(con, "attribution_through_block")
-        cur = meta_get(con, "pass_a_cursor", "0")
-        if att:
-            print(f"(launcher attribution covers blocks 0-{int(att):,}; token "
-                  f"discovery reaches {int(cur)-1:,}. A launch above the "
-                  f"attribution boundary is known but not yet attributed.)")
-        else:
-            print(f"(index covers blocks 0-{int(cur)-1:,}; a launch outside "
-                  f"that range would not appear)")
+        print(f"(launcher attribution covers blocks 0-{att:,}; token discovery "
+              f"reaches {cur:,}. Pass a token address to attribute it live.)")
         return
 
-    lp = {a: v["label"] for a, v in ANCHORS["launchpads"].items()}
-    print(f"{q} launched {len(launches)} token(s):\n")
-    print(f"  {'block':>9}  {'when':<17} {'symbol':<14} {'via':<12} address")
-    for fb, ts, sym, nm, addr, txt, k in launches:
-        via = lp.get(txt, "direct" if not txt else "other")
-        print(f"  {fb:>9,}  {fmt_ts(ts)[:16]:<17} {str(sym)[:13]:<14} {via:<12} {addr}")
+    complete = att >= cur
+    print(f"{q} launched {len(launches)} token(s)"
+          f"{'' if complete else ' that this index knows about'}:\n")
+    print(f"  {'block':>11}  {'when':<17} {'symbol':<14} {'via':<14} address")
+    for fb, ts, sym, nm, addr, txt, live in launches:
+        via = route_label(txt, short=True)
+        when = fmt_ts(ts)[:16] if ts else "(live)"
+        print(f"  {fb:>11,}  {when:<17} {str(sym)[:13]:<14} {via:<14} {addr}")
+
+    if complete:
+        print(f"\n  Complete: attribution covers the whole indexed chain "
+              f"(blocks 0-{cur:,}).")
+    else:
+        print(f"\n  PARTIAL: attribution covers blocks 0-{att:,}, but tokens "
+              f"are discovered through {cur:,}.\n  Launches in that gap are "
+              f"missing from this list unless looked up by address.")
 
     print(f"\n  nonce={int(rpc.call('eth_getTransactionCount', [q, 'latest']), 16)}"
           f"  balance={int(rpc.call('eth_getBalance', [q, 'latest']), 16)/1e18:.4f} ETH")
@@ -1453,8 +1727,10 @@ def cmd_launcher(rpc, con, args):
 def cmd_attribute(rpc, con, args):
     """Populate launcher attribution WITHOUT the per-token metadata calls.
 
-    `meta` costs 4 eth_calls per token (~50 tokens/s against the public
-    endpoint), which is hours at chain scale. But launcher attribution -- the
+    `meta` costs 4 eth_calls per token and measured 1.4 tokens/s against the
+    public endpoint across a 119,598-token run -- 23 hours, fighting 18,245
+    rate-limit responses. That is days at chain scale. But launcher attribution
+    -- the
     thing explorers cannot do, and the reason this index exists -- only needs
     the first-mint transaction, which is already in mint_first from the log
     scan. So seed token rows straight from SQL and resolve senders in batches.
@@ -1544,6 +1820,79 @@ def cmd_selftest(rpc, con, args):
     print("selftest OK: every global reference resolves")
 
 
+def cmd_launchers(rpc, con, args):
+    """Population statistics over launcher identity.
+
+    Only possible once tokens are keyed by the account that sent the deploying
+    transaction. An explorer keyed on the contract creator sees one launchpad
+    address responsible for tens of thousands of tokens and no people at all,
+    so none of these questions can even be asked there.
+
+    The headline is the repeat rate: what share of tokens come from an account
+    that had already launched something. That is the number a due diligence
+    check actually wants, and it is not available anywhere else on EVM.
+    """
+    att, cur = attribution_bounds(con)
+    q1 = lambda s: con.execute(s).fetchone()[0]
+    total = q1("SELECT COUNT(*) FROM token WHERE first_tx_from IS NOT NULL")
+    if not total:
+        print("nothing attributed yet -- run `attribute` first", file=sys.stderr)
+        return
+    wallets = q1("SELECT COUNT(DISTINCT COALESCE(aa_sender, first_tx_from)) FROM token "
+                 "WHERE first_tx_from IS NOT NULL")
+
+    print(f"attributed tokens : {total:,}")
+    print(f"distinct launchers: {wallets:,}"
+          f"   ({total / wallets:.1f} tokens per launcher)")
+    print(f"coverage          : blocks 0-{att:,}"
+          f"{'' if att >= cur else f' (discovery reaches {cur:,})'}")
+
+    # --- how concentrated is launching? ---
+    rows = con.execute("""
+        SELECT CASE WHEN n=1 THEN '1' WHEN n=2 THEN '2' WHEN n<=5 THEN '3-5'
+                    WHEN n<=10 THEN '6-10' WHEN n<=50 THEN '11-50'
+                    ELSE '50+' END AS bucket, COUNT(*), SUM(n)
+        FROM (SELECT COALESCE(aa_sender, first_tx_from) AS who, COUNT(*) n FROM token
+              WHERE first_tx_from IS NOT NULL GROUP BY who)
+        GROUP BY bucket""").fetchall()
+    buckets = {b: (w, t) for b, w, t in rows}
+    print(f"\nlaunches per wallet")
+    print(f"  {'launches':<10} {'wallets':>10} {'tokens':>12}  {'share':>7}")
+    for b in ("1", "2", "3-5", "6-10", "11-50", "50+"):
+        w, t = buckets.get(b, (0, 0))
+        print(f"  {b:<10} {w:>10,} {t:>12,}  {t / total * 100:>6.1f}%")
+
+    repeat = sum(t for b, (w, t) in buckets.items() if b != "1")
+    print(f"\n  {repeat / total * 100:.1f}% of tokens were launched by an account "
+          f"that has launched more than once.")
+
+    # --- who launches the most ---
+    n = max(args.limit, 1)
+    print(f"\ntop {n} launchers")
+    print(f"  {'launches':>9}  {'first block':>12}  {'last block':>12}  wallet")
+    for w, c, lo, hi in con.execute("""
+            SELECT COALESCE(aa_sender, first_tx_from) AS who, COUNT(*) n, MIN(first_block), MAX(first_block)
+            FROM token WHERE first_tx_from IS NOT NULL
+            GROUP BY who ORDER BY n DESC, MIN(first_block) LIMIT ?""",
+            (n,)):
+        print(f"  {c:>9,}  {lo:>12,}  {hi:>12,}  {w}")
+
+    # --- which launchpads carry the volume ---
+    print(f"\nlaunchpad share")
+    print(f"  {'tokens':>9} {'share':>7}  {'launchers':>10}  {'first':>11}  "
+          f"{'last':>11}  via")
+    for to, c, w, lo, hi in con.execute("""
+            SELECT first_tx_to, COUNT(*) n, COUNT(DISTINCT COALESCE(aa_sender, first_tx_from)),
+                   MIN(first_block), MAX(first_block)
+            FROM token WHERE first_tx_from IS NOT NULL
+            GROUP BY first_tx_to ORDER BY n DESC LIMIT ?""", (n,)):
+        label = route_label(to)
+        if label == "other":
+            label = to
+        print(f"  {c:>9,} {c / total * 100:>6.1f}%  {w:>10,}  {lo:>11,}  "
+              f"{hi:>11,}  {label}")
+
+
 def cmd_status(rpc, con, args):
     a = int(meta_get(con, "pass_a_cursor", "0"))
     b = int(meta_get(con, "pass_b_cursor", "0"))
@@ -1562,8 +1911,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["phase1", "pass-a", "pass-b", "meta",
                                     "creators", "clusters", "classify", "enrich", "mcap",
-                                    "export", "attribute", "launcher", "selftest",
-                                    "status"])
+                                    "export", "attribute", "userops", "launcher",
+                                    "launchers", "selftest", "status"])
     ap.add_argument("--rpc", default=DEFAULT_RPC)
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--start", type=int, default=None)
@@ -1588,7 +1937,9 @@ def main():
      "meta": cmd_meta, "creators": cmd_creators, "clusters": cmd_clusters,
      "classify": cmd_classify, "enrich": cmd_enrich, "mcap": cmd_mcap,
      "export": cmd_export, "attribute": cmd_attribute,
-     "launcher": cmd_launcher, "selftest": cmd_selftest,
+     "userops": cmd_userops,
+     "launcher": cmd_launcher, "launchers": cmd_launchers,
+     "selftest": cmd_selftest,
      "status": cmd_status}[args.cmd](rpc, con, args)
     con.close()
 

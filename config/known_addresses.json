@@ -81,8 +81,18 @@
   "deployment_routes": {
     "0x0000000071727de22e5e9d8baf0edac6f37da032": {
       "label": "ERC-4337 EntryPoint v0.7",
-      "evidence": "canonical cross-chain EntryPoint address; 682 tokens deployed via smart-account transactions through it.",
-      "note": "Not a launchpad. Tokens routed through it are still attributed to their tx sender."
+      "evidence": "canonical cross-chain EntryPoint address; 11,309 tokens deployed through it via smart-account transactions, submitted by only 24 distinct tx senders.",
+      "note": "Not a launchpad, and tx.from here is a BUNDLER, not the launcher. The 24 senders are bundlers relaying other people's UserOperations; the three busiest accounted for 2,997 / 2,802 / 2,287 tokens while routing 100% through this address, a profile no human launcher has. The real account is the indexed `sender` of the UserOperationEvent emitted per operation; `scan.py userops` resolves it into aa_sender."
+    },
+    "0x4337084d9e255ff0702461cf8895ce9e3b5ff108": {
+      "label": "ERC-4337 EntryPoint v0.8",
+      "evidence": "canonical cross-chain EntryPoint address; 1 token observed deployed through it in the attributed range.",
+      "note": "Same bundler caveat as v0.7."
+    },
+    "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789": {
+      "label": "ERC-4337 EntryPoint v0.6",
+      "evidence": "canonical cross-chain EntryPoint address. NOT observed on this chain: zero tokens routed through it in the attributed range.",
+      "note": "Listed because the address is canonical and fixed across chains, so a v0.6 deployment would otherwise be silently misattributed to its bundler. This entry is a guard, not a finding."
     }
   },
   "staging_window": {
