@@ -397,6 +397,19 @@ scope is now complete.
 
 ## 8. Things I had to guess at, and known gaps
 
+**Correction (ERC-4337).** This report attributes every token to its
+transaction sender. For the **682** tokens in this range deployed through
+EntryPoint `0x0000000071727de22e5e9d8baf0edac6f37da032` — 10.8% of the 6,319
+here — that sender is a **bundler** relaying someone else's UserOperation, not
+the launcher. Chain-wide the pattern is starker: 11,309 such tokens submitted by
+only 24 distinct senders, the three busiest holding 2,997 / 2,802 / 2,287
+apiece while routing exclusively through EntryPoint, which no human launcher
+does. The launcher is the indexed `sender` of the `UserOperationEvent` emitted
+per operation, now resolved by `scan.py userops` into an `aa_sender` column;
+`tx.from` is kept as recorded. Any statement below that names a deployer for one
+of those 682 names the bundler. Deployer-cluster propagation was checked and did
+not label any of them, so the classification totals in §3 are unaffected.
+
 - **Launchpad A has no public name** that I could establish from on-chain data.
   I identified NOXA Fun from its owner's test token; launchpad A's owner
   (`0xce54513a…`) left no equivalent signature. Reported as "launchpad-A".

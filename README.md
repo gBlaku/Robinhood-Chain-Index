@@ -40,6 +40,9 @@ tx.to     →  the launchpad they used             (stored as first_tx_to)
 creator   →  always the launchpad. no use to anyone.
 ```
 
+with one exception, ERC-4337, which is covered below — there `tx.from` is a
+bundler and the launcher has to be recovered from the UserOperation.
+
 Index `first_tx_from` for every token and the lookup works again:
 
 ```console
@@ -64,6 +67,30 @@ $ scan.py launcher 0x020bfc650a365f8bb26819deaabf3e21291018b4
 CASHCAT was that wallet's sixth try. The five before it went nowhere, and it
 launched another token four minutes later. You can't see any of that on an
 explorer.
+
+### The same mistake, one layer up
+
+`tx.from` is the person — except when it isn't. Under ERC-4337 a **bundler**
+submits other people's operations, so `tx.from` belongs to the bundler and
+every token in a batch gets credited to it. That is the launchpad problem
+again, moved up a layer, and it is easy to ship without noticing.
+
+It showed up here as a shape that doesn't occur in nature. The three most
+prolific "launchers" in the index had 2,997, 2,802 and 2,287 launches — and
+routed **100% through EntryPoint**, nothing else, ever. Real launchers spread
+across launchpads. Only a bundler has that profile.
+
+The actual account is the `sender` of the `UserOperationEvent` that EntryPoint
+emits per operation. Because a bundler batches several operations into one
+transaction, picking the right event is an ordering problem: EntryPoint emits
+the event *after* the logs of the operation it describes, so a mint belongs to
+the first `UserOperationEvent` that follows it. `scan.py userops` resolves this
+into a separate `aa_sender` column, leaving `tx.from` as recorded — the raw
+observation and the interpretation stay separable, and every lookup reports the
+bundler and the launcher as two different things.
+
+Where the batch can't be attributed unambiguously, it's left alone rather than
+assigned to the nearest candidate.
 
 ## What I found
 
@@ -128,6 +155,19 @@ between a 100 minute scan and a 100 hour one.
 | Parallel connections | make it *worse*. 3 threads measured 68 blk/s against 118 single threaded |
 | Default Python `User-Agent` | HTTP 403 |
 
+Those are the caps the endpoint enforces per request. Sustained end-to-end
+throughput over a long run is a different and much lower number, because the
+bucket refills slower than a saturated batch drains it. Measured across full
+runs, not extrapolated from the caps:
+
+| Stage | Measured | Run |
+|---|---|---|
+| `attribute` (1 `eth_getTransactionByHash` per token) | **9/s** contended, **20 to 30/s** alone | 110,042 tokens in 3h27m |
+| `meta` (4 `eth_call`s per token) | **1.4 tokens/s** | 119,598 tokens in 23h26m, absorbing 18,245 429s |
+
+The gap between those two is why attribution and metadata are separate stages.
+Quoting the batch caps as throughput would overstate `meta` by about 35x.
+
 Things that fell out of this:
 
 - **A batch that's too big gets refused no matter how long you wait.** The fix is
@@ -171,15 +211,33 @@ oversell what this can actually answer.
 | Layer | What you get | Coverage |
 |---|---|---|
 | Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,345 · **635,045 tokens** (in `scan.db`, not shipped) |
-| Attribution | who launched it (`first_tx_from`) | blocks 0 to 9,000,000 · **125,961 tokens** |
+| Attribution | who launched it (`first_tx_from`) | blocks 0 to 9,000,000 · **125,946 tokens** |
 | Metadata | name, symbol, decimals, supply | blocks 0 to 9,000,000 · **126,417 tokens** |
 
 Attribution and metadata now cover the same range, so a lookup inside it returns
 the launcher, the token name and the launchpad. Attribution is always a
-contiguous prefix, and `launcher` tells you where the boundary is when it can't
-answer, instead of returning nothing. Returning
-nothing would read as "this account has never launched anything", which is the
-worst possible way for a due diligence tool to fail.
+contiguous prefix.
+
+**Outside that prefix, `launcher` goes to the chain instead of giving up.** The
+chain head is past block 52,000,000, so a batch index is behind by construction
+and most tokens anyone would actually look up are outside it. A token's mint
+transaction is usually already on record from the log scan, which leaves a
+single `eth_getTransactionByHash` — measured at 0.13s. When even that is
+missing, one `eth_getLogs` pinned to the token's own address finds its first
+mint across the whole chain in 0.12s, because the endpoint caps on results
+rather than block span. Resolved answers are cached in a separate table, so
+lookups make the index more complete over time without ever altering the
+reproducible batch output that `export` ships.
+
+That makes the two directions differ, and the output says which one you get:
+
+- **token → launcher is unbounded.** Any token, any block, always answered.
+- **launcher → everything they launched needs the index**, because logs cannot
+  be filtered by `tx.from`. Above the boundary that list is marked `PARTIAL`.
+
+A partial list must never read as a complete one, and an empty answer must
+never read as "this account has never launched anything" — that is the worst
+possible way for a due diligence tool to fail.
 
 There's also a contract creation pass covering blocks 0 to 65,000. Doing that
 chain-wide would take about 117 hours at the measured ceiling, so it's
@@ -202,11 +260,12 @@ actually live.
 ```
 scan.py                        the pipeline, one file, subcommand dispatch
 config/known_addresses.json    classification anchors and their evidence
-data/all_tokens.csv.gz         125,961 attributed tokens, creation order
+data/all_tokens.csv.gz         125,946 attributed tokens, creation order
 data/first_2000_tokens.csv     the same table's opening, browsable on GitHub
 data/independent.csv           earliest independent launches, enriched
 docs/REPORT.md                 full writeup
-tests/                         decoding and sanitisation, stdlib unittest
+tests/                         decoding, sanitisation, live attribution and
+                               ERC-4337 resolution; stdlib unittest, no network
 ```
 
 The full table ships gzipped because GitHub will not preview anything over
@@ -226,11 +285,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scan.py pass-a  --end 50500000    # mint scan, the slow one
 .venv/bin/python scan.py pass-b  --end 65000       # contract creation pass
 .venv/bin/python scan.py attribute --max-block 9000000
+.venv/bin/python scan.py userops                   # un-blame ERC-4337 bundlers
 .venv/bin/python scan.py meta    --max-block 9000000
 .venv/bin/python scan.py classify
 .venv/bin/python scan.py export
 
 .venv/bin/python scan.py launcher 0x…              # the lookup explorers can't do
+.venv/bin/python scan.py launchers                 # who launches, and how often
 .venv/bin/python -m unittest discover tests
 ```
 
