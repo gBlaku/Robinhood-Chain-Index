@@ -162,11 +162,22 @@ runs, not extrapolated from the caps:
 
 | Stage | Measured | Run |
 |---|---|---|
-| `attribute` (1 `eth_getTransactionByHash` per token) | **9/s** contended, **20 to 30/s** alone | 110,042 tokens in 3h27m |
+| `attribute`, batch cap 15 | **~5/s** | 28,500 tokens |
+| `attribute`, batch cap 10 | **~11/s** and still climbing | 120,000 tokens |
 | `meta` (4 `eth_call`s per token) | **1.4 tokens/s** | 119,598 tokens in 23h26m, absorbing 18,245 429s |
 
-The gap between those two is why attribution and metadata are separate stages.
+The gap between those two stages is why attribution and metadata are separate.
 Quoting the batch caps as throughput would overstate `meta` by about 35x.
+
+**Beware short benchmarks against this endpoint.** Within a single
+uninterrupted run, with no restarts and no connection changes, the
+instantaneous rate went 27/s (opening burst), then 11, 6, 8, 14, 18, 22 — it
+dips and recovers on its own. Every run also opens with a burst well above its
+own steady state. Both together make a short sample almost meaningless: measure
+a trough, restart anything at all, measure the next burst, and you will
+"prove" whatever you just changed was a 3.5x improvement. That mistake was
+made here and is recorded in the history rather than quietly dropped. Only
+compare configurations across runs of tens of thousands of calls.
 
 Things that fell out of this:
 

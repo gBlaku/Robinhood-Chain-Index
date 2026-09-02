@@ -144,9 +144,15 @@ class Rpc:
 
     An earlier docstring here described a delay that grew on 429 and decayed on
     success. No such code existed; `_ok_streak`, `min_delay` and `max_delay`
-    were left over from a design that was never finished. The two levers that
-    do work are the batch cap (see `batch_caps`) and periodic session recycling
-    (see `_maybe_recycle`), both set from measurement rather than assumption.
+    were left over from a design that was never finished.
+
+    THROUGHPUT FLUCTUATES, AND SHORT MEASUREMENTS OF IT LIE. Over one
+    continuously running pass, with no restarts and no connection changes, the
+    instantaneous rate went 27/s (opening burst), 11, 6, 8, 14, 18, 22 -- it
+    dips and recovers on its own. Any sample shorter than tens of thousands of
+    calls can land anywhere in that range, so a rate measured over a few
+    hundred calls is not evidence about a configuration change. Compare
+    configurations only across long runs. See `batch_caps`.
     """
 
     def __init__(self, url, sleep=0.0, verbose=True):
@@ -156,12 +162,6 @@ class Rpc:
         self.max_delay = 8.0
         self.verbose = verbose
         self._new_session()
-        # Throughput decays over a sustained run and a fresh connection resets
-        # it: measured 7/s after ~40 minutes, then 25-27/s immediately after
-        # restarting the process against the same data. The throttle is scoped
-        # to the connection, not to the IP alone, so recycling the session
-        # recovers it without needing a restart. See _maybe_recycle.
-        self.recycle_after = 1000
         self._id = 0
         self.n_calls = 0
         self.n_429 = 0
@@ -171,15 +171,16 @@ class Rpc:
         # tops out at 25 sub-requests (~200 sub-req/s); eth_getBlockByNumber
         # with full tx bodies tops out at 10 (~118 blk/s). Opening parallel
         # connections does not raise the ceiling -- it lowers it.
-        # Re-measured over a long run, 600 tx per setting, when sustained
-        # throughput had decayed to ~6/s at the old cap of 15:
-        #     cap  5 ->  3.6 tx/s,  0 429s   (too many round trips)
-        #     cap 10 -> 21.9 tx/s, 32 429s   <- best
-        #     cap 15 -> 14.9 tx/s, 77 429s   <- previous setting, worst of the three
-        #     cap 25 -> 16.0 tx/s,  0 429s
-        # The largest cap the endpoint accepts is not the fastest: 15 draws the
-        # most refusals and pays for them in retries. Tuned for throughput, not
-        # for the ceiling.
+        # eth_getTransactionByHash was lowered from 15 to 10 on the evidence of
+        # two long runs over the same workload: cap 15 averaged ~5/s across
+        # 28,500 tokens, cap 10 averaged 11/s and was still climbing across
+        # 120,000. The largest cap the endpoint accepts is not the fastest.
+        #
+        # A short bench (600 tx per setting) also favoured 10, but see the
+        # class docstring: the baseline swings between 6 and 22/s on its own,
+        # so a 600-call sample cannot separate a setting from that noise. The
+        # long-run comparison is the reason for this value; the short bench is
+        # not quotable and its numbers have been removed.
         self.batch_caps = {"eth_call": 25, "eth_getBlockByNumber": 10,
                            "eth_getTransactionReceipt": 10,
                            "eth_getTransactionByHash": 10}
@@ -193,22 +194,7 @@ class Rpc:
             "User-Agent": "curl/8.7.1",
         })
 
-    def _maybe_recycle(self):
-        """Drop the connection periodically to reset the endpoint's throttle.
-
-        Cheap: one TCP handshake per `recycle_after` requests, roughly every
-        few minutes at full rate, against a 3.5x throughput difference.
-        """
-        if self.recycle_after and self.n_calls and \
-                self.n_calls % self.recycle_after == 0:
-            try:
-                self.session.close()
-            except Exception:
-                pass
-            self._new_session()
-
     def _post(self, payload, timeout, retries):
-        self._maybe_recycle()
         backoff = 0.2
         last = None
         saw_429 = False
