@@ -579,14 +579,18 @@ def cmd_pass_a(rpc, con, args):
             # limiting, which narrows further. Observed collapsing a 100,000
             # block chunk to 6 and then oscillating there indefinitely --
             # 18 blocks of progress in three and a half hours.
-            transient = any(k in msg for k in
-                            ("rate-limited", "429", "connection", "reset",
-                             "aborted", "timed out", "timeout",
-                             "context deadline", "temporarily"))
+            # Classify only "too big"; treat everything else as transient.
+            # Enumerating transients by keyword does not work -- the list
+            # missed a bare connection reset, and then missed the public RPC's
+            # upstream error, `Post "http://10.31.65.109:8547/rpc": EOF`, which
+            # killed a run 16.9M blocks in. A genuinely fatal error still
+            # surfaces: it fails identically 30 times and then raises. Being
+            # wrong in this direction costs a few minutes of backoff; being
+            # wrong in the other direction throws away hours of scanning.
             too_big = any(k in msg for k in
                           ("exceeds limit", "too many", "exceed", "range",
                            "response size", "large"))
-            if transient and not too_big:
+            if not too_big:
                 stall += 1
                 if stall > 30:
                     raise

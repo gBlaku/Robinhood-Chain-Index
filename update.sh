@@ -24,8 +24,18 @@ fi
 echo $$ > $LOCK
 trap 'rm -f $LOCK' EXIT INT TERM
 
+# Retry across process death. Every stage resumes from its own cursor, so a
+# restart costs one chunk, not the run. A public endpoint drops connections
+# and its upstream nodes return EOF; one such error killed a run 16.9M blocks
+# in, which is a wrapper problem as much as a client one.
 echo "[$(date -u +%FT%TZ)] === update start ===" >> $LOG
-.venv/bin/python scan.py update --min-lag 1000 >> $LOG 2>&1
-rc=$?
-echo "[$(date -u +%FT%TZ)] === update exit $rc ===" >> $LOG
+rc=1
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  .venv/bin/python scan.py update --min-lag 1000 >> $LOG 2>&1
+  rc=$?
+  [ $rc -eq 0 ] && break
+  echo "[$(date -u +%FT%TZ)] attempt $attempt exited $rc, resuming in 60s" >> $LOG
+  sleep 60
+done
+echo "[$(date -u +%FT%TZ)] === update exit $rc after $attempt attempt(s) ===" >> $LOG
 exit $rc
