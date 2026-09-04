@@ -75,10 +75,11 @@ submits other people's operations, so `tx.from` belongs to the bundler and
 every token in a batch gets credited to it. That is the launchpad problem
 again, moved up a layer, and it is easy to ship without noticing.
 
-It showed up here as a shape that doesn't occur in nature. The three most
-prolific "launchers" in the index had 2,997, 2,802 and 2,287 launches — and
-routed **100% through EntryPoint**, nothing else, ever. Real launchers spread
-across launchpads. Only a bundler has that profile.
+It showed up here as a shape that doesn't occur in nature. The most prolific
+"launchers" in the index routed **100% through EntryPoint**, nothing else,
+ever. Real launchers spread across launchpads; only a bundler has that profile.
+Across the full chain, **41,621 tokens** were submitted by just **137**
+bundlers, the busiest carrying 5,095 on its own.
 
 The actual account is the `sender` of the `UserOperationEvent` that EntryPoint
 emits per operation. Because a bundler batches several operations into one
@@ -151,7 +152,7 @@ between a 100 minute scan and a 100 hour one.
 | `eth_getLogs` block range cap | none. It caps on *results* instead: 10,000 logs |
 | Batch cap, `eth_call` | 25 sub-requests (~200/s) |
 | Batch cap, `eth_getBlockByNumber` (full bodies) | 10 sub-requests (~118 blocks/s) |
-| Batch cap, `eth_getTransactionByHash` | 15 sub-requests (~15 to 20/s) |
+| Batch cap, `eth_getTransactionByHash` | 10 sub-requests (15 accepted, but slower — see below) |
 | Parallel connections | make it *worse*. 3 threads measured 68 blk/s against 118 single threaded |
 | Default Python `User-Agent` | HTTP 403 |
 
@@ -221,13 +222,19 @@ oversell what this can actually answer.
 
 | Layer | What you get | Coverage |
 |---|---|---|
-| Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,345 · **635,045 tokens** (in `scan.db`, not shipped) |
-| Attribution | who launched it (`first_tx_from`) | blocks 0 to 9,000,000 · **125,946 tokens** |
-| Metadata | name, symbol, decimals, supply | blocks 0 to 9,000,000 · **126,417 tokens** |
+| Discovery | address and birth block, from the mint log scan | blocks 0 to 22,583,346 · **635,501 tokens** |
+| Attribution | who launched it (`launcher`) | blocks 0 to 22,583,346 · **635,501 tokens** — every discovered token |
+| Metadata | name, symbol, decimals, supply | blocks 0 to 8,999,990 · **125,972 tokens** |
 
-Attribution and metadata now cover the same range, so a lookup inside it returns
-the launcher, the token name and the launchpad. Attribution is always a
-contiguous prefix.
+Attribution is complete across the discovered range: every token found by the
+log scan has the account that launched it. Metadata is the layer that lags,
+because `name`/`symbol` cost four `eth_call`s per token at a measured 1.4
+tokens/s — the remaining 509,529 would take over 100 hours against this
+endpoint, so they ship without names rather than not at all.
+
+That is why there are two published tables. `all_tokens.csv.gz` is the enriched
+one and is limited by metadata; `launchers_full.csv.gz` carries all 635,501
+attributed rows and is the actual result.
 
 **Outside that prefix, `launcher` goes to the chain instead of giving up.** The
 chain head is past block 52,000,000, so a batch index is behind by construction
@@ -271,21 +278,23 @@ actually live.
 ```
 scan.py                        the pipeline, one file, subcommand dispatch
 config/known_addresses.json    classification anchors and their evidence
-data/all_tokens.csv.gz         125,946 attributed tokens, creation order
-data/first_2000_tokens.csv     the same table's opening, browsable on GitHub
+data/launchers_full.csv.gz     all 635,501 tokens with their launcher
+data/all_tokens.csv.gz         125,972 of those enriched with name and symbol
+data/first_2000_tokens.csv     the enriched table's opening, browsable on GitHub
 data/independent.csv           earliest independent launches, enriched
 docs/REPORT.md                 full writeup
 tests/                         decoding, sanitisation, live attribution and
                                ERC-4337 resolution; stdlib unittest, no network
 ```
 
-The full table ships gzipped because GitHub will not preview anything over
-about 5MB, and the raw CSV is 55MB. `first_2000_tokens.csv` is the same data,
-truncated so you can actually read it in the web UI. Both cover the attributed
-range. The wider discovery set (635,045 tokens, address and block only) stays in
-the local SQLite database rather than the repo, since those rows carry no
-launcher, no metadata, and an identical placeholder string repeated half a
-million times.
+Both tables ship gzipped because GitHub will not preview anything over about
+5MB; raw they are 111MB and 64MB. `first_2000_tokens.csv` is the enriched
+table's head, truncated so you can read it in the web UI.
+
+`launchers_full.csv.gz` carries `launcher` and `deployer_tx_from` as separate
+columns. They differ on 41,621 rows, and every one of those is an ERC-4337
+deployment where the transaction sender was a bundler rather than the person —
+so the correction is auditable from the CSV without running anything.
 
 ## Usage
 
@@ -295,7 +304,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scan.py phase1                    # check chain, probe limits
 .venv/bin/python scan.py pass-a  --end 50500000    # mint scan, the slow one
 .venv/bin/python scan.py pass-b  --end 65000       # contract creation pass
-.venv/bin/python scan.py attribute --max-block 9000000
+.venv/bin/python scan.py attribute --max-block 23000000   # full chain
 .venv/bin/python scan.py userops                   # un-blame ERC-4337 bundlers
 .venv/bin/python scan.py meta    --max-block 9000000
 .venv/bin/python scan.py classify

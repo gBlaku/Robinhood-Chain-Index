@@ -1367,12 +1367,16 @@ def cmd_export(rpc, con, args):
     """Write out/all_tokens.csv and out/independent.csv."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # The published CSV covers the ATTRIBUTED range. Discovery reaches much
-    # further, but those rows carry only an address and a block: no launcher,
-    # no metadata, and an identical placeholder evidence string repeated
-    # hundreds of thousands of times. Shipping them added 150MB of redundancy
-    # and pushed the file past GitHub's 100MB limit without adding information.
-    # The full discovery set lives in out/scan.db and is regenerable.
+    # Two published tables, because attribution and metadata no longer cover
+    # the same range. all_tokens.csv is the enriched one and is gated on
+    # is_erc20, which only `meta` sets and `meta` stops at block ~9,000,000.
+    # Attribution now reaches every discovered token, so gating the only
+    # published file on metadata would leave 80% of the result unshipped --
+    # and the launcher, not the name, is the point of this project.
+    # launchers_full.csv.gz therefore carries all attributed rows with no
+    # metadata requirement. An earlier version of this comment justified
+    # excluding those rows because they "carry no launcher, no metadata";
+    # half of that stopped being true once attribution completed.
     p1 = os.path.join(DATA_DIR, "all_tokens.csv")
     # `deployer` is tx.from as recorded. For an ERC-4337 deployment that is the
     # bundler, so `launcher` carries the resolved account and is the column to
@@ -1411,6 +1415,29 @@ def cmd_export(rpc, con, args):
             dst.write(line)
     print(f"wrote {p1}.gz and {sample}")
 
+    # Full-chain launcher table: every attributed token, metadata or not.
+    # `deployer_tx_from` ships alongside `launcher` so the ERC-4337 correction
+    # is auditable from the CSV alone -- where the two differ, a bundler
+    # submitted the deployment and `launcher` is the account behind it.
+    p3 = os.path.join(DATA_DIR, "launchers_full.csv")
+    cols3 = ["first_block", "address", "launcher", "deployer_tx_from",
+             "via_factory", "symbol"]
+    n3 = 0
+    with open(p3, "w", newline="") as fh:
+        w = csv.writer(fh); w.writerow(cols3)
+        for r in con.execute("""
+            SELECT first_block, address, COALESCE(aa_sender,first_tx_from),
+                   first_tx_from, first_tx_to, symbol
+            FROM token WHERE first_tx_from IS NOT NULL
+            ORDER BY first_block, address"""):
+            w.writerow([csv_safe(sanitize_text(x) if isinstance(x, str) else x)
+                        for x in r])
+            n3 += 1
+    with open(p3, "rb") as src, gzip.open(p3 + ".gz", "wb", compresslevel=9) as dst:
+        shutil.copyfileobj(src, dst)
+    print(f"wrote {p3}.gz ({n3} rows, "
+          f"{os.path.getsize(p3 + '.gz') / 1e6:.1f}MB gzipped)")
+
     p2 = os.path.join(DATA_DIR, "independent.csv")
     cols2 = ["rank", "first_block", "first_ts_utc", "symbol", "name", "address",
              "deployer", "launchpad_or_factory", "total_supply_whole",
@@ -1447,7 +1474,7 @@ def cmd_export(rpc, con, args):
                                   r[19], notes]])
             n2 = i
     print(f"wrote {p2} ({n2} rows)")
-    verify_csv(p1, p2)
+    verify_csv(p1, p2, p3)
 
 
 def verify_csv(*paths):

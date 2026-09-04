@@ -10,3 +10,5 @@ BRIEF.md
 
 # full table ships gzipped; the raw csv is 55MB and GitHub cannot preview it
 data/all_tokens.csv
+# full-chain launcher table ships gzipped; raw is ~86MB
+data/launchers_full.csv
