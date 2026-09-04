@@ -1845,6 +1845,63 @@ def cmd_attribute(rpc, con, args):
           f"({time.time()-t0:.0f}s total)", file=sys.stderr)
 
 
+def cmd_update(rpc, con, args):
+    """Catch the index up to the chain head, then rebuild the published tables.
+
+    Everything else here takes explicit block ranges, which is right for a
+    one-off but wrong for something a scheduler runs: the index is only ever
+    "complete as of" whenever it last ran by hand. This resolves the head
+    itself and runs the stages in the one order that works.
+
+    STRICTLY SERIAL, and not for tidiness. Concurrent passes share one rate
+    budget and measured throughput collapses when they overlap -- attribution
+    fell from 25/s to 7/s while a userops pass ran alongside it, slower than
+    running the two back to back. Never parallelise these.
+
+    Stage order is forced by data dependencies, not preference:
+      pass-a     finds tokens                  (nothing else can)
+      attribute  needs the tokens              -> launcher
+      userops    needs first_tx_to             -> which is set by attribute,
+                 so ERC-4337 deployments are invisible until then. This is why
+                 the first userops run resolved 11,309 and the second 41,621.
+      classify   needs launcher and route
+      export     needs classify
+    Safe to kill and re-run at any point; every stage resumes from its cursor.
+    """
+    t0 = time.time()
+    head = int(rpc.call("eth_blockNumber", []), 16)
+    start = int(meta_get(con, "pass_a_cursor", "0"))
+    lag = head - start
+    print(f"[update] head={head:,} index={start:,} lag={lag:,} blocks",
+          file=sys.stderr)
+    if lag < args.min_lag:
+        print(f"[update] lag under --min-lag ({args.min_lag:,}), nothing to do",
+              file=sys.stderr)
+        return
+
+    stages = [
+        ("pass-a", cmd_pass_a, {"start": None, "end": head}),
+        ("attribute", cmd_attribute, {"max_block": head + 1}),
+        ("userops", cmd_userops, {}),
+        ("classify", cmd_classify, {}),
+        ("export", cmd_export, {}),
+    ]
+    for name, fn, overrides in stages:
+        sub = argparse.Namespace(**vars(args))
+        for k, v in overrides.items():
+            setattr(sub, k, v)
+        s0 = time.time()
+        print(f"[update] === {name} ===", file=sys.stderr)
+        fn(rpc, con, sub)
+        print(f"[update] {name} done in {time.time()-s0:,.0f}s", file=sys.stderr)
+
+    done = con.execute(
+        "SELECT COUNT(*) FROM token WHERE first_tx_from IS NOT NULL").fetchone()[0]
+    print(f"[update] complete: {done:,} tokens attributed through block "
+          f"{int(meta_get(con, 'pass_a_cursor', '0'))-1:,} "
+          f"({time.time()-t0:,.0f}s total)", file=sys.stderr)
+
+
 def cmd_selftest(rpc, con, args):
     """Verify every function's global references actually resolve.
 
@@ -1966,13 +2023,38 @@ def cmd_status(rpc, con, args):
     print(f"classified    : {q('SELECT COUNT(*) FROM token WHERE klass IS NOT NULL'):,}")
 
 
+def _dotenv_rpc():
+    """Read RPC_URL from ./.env, so a keyed endpoint never enters argv.
+
+    A URL passed with --rpc lands in shell history, in `ps` output, and in any
+    log that echoes the command. The key in it is a credential. .env is
+    gitignored and read only here.
+    """
+    path = os.path.join(_ROOT, ".env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("RPC_URL="):
+                    return line.split("=", 1)[1].strip() or None
+    except OSError:
+        return None
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["phase1", "pass-a", "pass-b", "meta",
                                     "creators", "clusters", "classify", "enrich", "mcap",
                                     "export", "attribute", "userops", "launcher",
-                                    "launchers", "selftest", "status"])
-    ap.add_argument("--rpc", default=DEFAULT_RPC)
+                                    "launchers", "update", "selftest", "status"])
+    ap.add_argument("--rpc", default=os.environ.get("RPC_URL") or _dotenv_rpc()
+                    or DEFAULT_RPC,
+                    help="endpoint; falls back to $RPC_URL, then .env, then the "
+                         "public RPC. Keep keyed URLs out of argv and shell "
+                         "history -- put them in .env, which is gitignored.")
+    ap.add_argument("--min-lag", type=int, default=0,
+                    help="update: skip the run unless the index is at least "
+                         "this many blocks behind the head")
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--start", type=int, default=None)
     ap.add_argument("--end", type=int, default=1_000_000)
@@ -1998,6 +2080,7 @@ def main():
      "export": cmd_export, "attribute": cmd_attribute,
      "userops": cmd_userops,
      "launcher": cmd_launcher, "launchers": cmd_launchers,
+     "update": cmd_update,
      "selftest": cmd_selftest,
      "status": cmd_status}[args.cmd](rpc, con, args)
     con.close()
