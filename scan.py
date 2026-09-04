@@ -563,6 +563,7 @@ def cmd_pass_a(rpc, con, args):
     n_new = 0
 
     cursor = start
+    stall = 0
     while cursor <= end:
         hi = min(cursor + chunk - 1, end)
         params = [{"fromBlock": hex(cursor), "toBlock": hex(hi),
@@ -571,14 +572,35 @@ def cmd_pass_a(rpc, con, args):
             logs = rpc.call("eth_getLogs", params, retries=14)
         except RpcError as e:
             msg = str(e).lower()
-            if chunk > 1 and any(k in msg for k in
-                                 ("exceeds limit", "range", "too many", "exceed",
-                                  "large", "timeout", "timed out", "response size",
-                                  "context deadline", "rate-limited")):
+            # Only shrink for "your query was too big". A rate limit or a
+            # dropped connection says nothing about query size, and treating
+            # them as size errors is a death spiral: narrowing multiplies the
+            # request count for the same blocks, which draws more rate
+            # limiting, which narrows further. Observed collapsing a 100,000
+            # block chunk to 6 and then oscillating there indefinitely --
+            # 18 blocks of progress in three and a half hours.
+            transient = any(k in msg for k in
+                            ("rate-limited", "429", "connection", "reset",
+                             "aborted", "timed out", "timeout",
+                             "context deadline", "temporarily"))
+            too_big = any(k in msg for k in
+                          ("exceeds limit", "too many", "exceed", "range",
+                           "response size", "large"))
+            if transient and not too_big:
+                stall += 1
+                if stall > 30:
+                    raise
+                back = min(2 ** min(stall, 6), 60)
+                print(f"  [transient: {str(e)[:60]} -- retry {stall} in {back}s "
+                      f"at chunk {chunk}]", file=sys.stderr)
+                time.sleep(back)
+                continue
+            if chunk > 1 and too_big:
                 chunk = max(1, chunk // 2)
                 print(f"  [narrowing chunk to {chunk}]", file=sys.stderr)
                 continue
             raise
+        stall = 0
 
         logs.sort(key=lambda l: (int(l["blockNumber"], 16), int(l["logIndex"], 16)))
         rows_erc20, rows_nft = [], []
@@ -1879,20 +1901,30 @@ def cmd_update(rpc, con, args):
               file=sys.stderr)
         return
 
+    # The two heavy stages want DIFFERENT endpoints, because their limits are
+    # unrelated. eth_getLogs on the public RPC has no block-range cap at all --
+    # it caps on results (10,000 logs) -- and measured 3,448 blk/s. Alchemy's
+    # free tier caps eth_getLogs at a 10-block range, which would need 3.1
+    # million requests for this backlog. Conversely eth_getTransactionByHash
+    # measured 23.4/s on Alchemy against 6.2/s public. So: logs public,
+    # everything else keyed. Neither endpoint is better; they are limited on
+    # different axes.
+    logs_rpc = Rpc(args.logs_rpc, sleep=args.sleep)
     stages = [
-        ("pass-a", cmd_pass_a, {"start": None, "end": head}),
-        ("attribute", cmd_attribute, {"max_block": head + 1}),
-        ("userops", cmd_userops, {}),
-        ("classify", cmd_classify, {}),
-        ("export", cmd_export, {}),
+        ("pass-a", cmd_pass_a, {"start": None, "end": head}, logs_rpc),
+        ("attribute", cmd_attribute, {"max_block": head + 1}, rpc),
+        ("userops", cmd_userops, {}, rpc),
+        ("classify", cmd_classify, {}, rpc),
+        ("export", cmd_export, {}, rpc),
     ]
-    for name, fn, overrides in stages:
+    for name, fn, overrides, use in stages:
         sub = argparse.Namespace(**vars(args))
         for k, v in overrides.items():
             setattr(sub, k, v)
         s0 = time.time()
-        print(f"[update] === {name} ===", file=sys.stderr)
-        fn(rpc, con, sub)
+        which = "public" if use is logs_rpc else "keyed"
+        print(f"[update] === {name} ({which} endpoint) ===", file=sys.stderr)
+        fn(use, con, sub)
         print(f"[update] {name} done in {time.time()-s0:,.0f}s", file=sys.stderr)
 
     done = con.execute(
@@ -2052,6 +2084,12 @@ def main():
                     help="endpoint; falls back to $RPC_URL, then .env, then the "
                          "public RPC. Keep keyed URLs out of argv and shell "
                          "history -- put them in .env, which is gitignored.")
+    ap.add_argument("--logs-rpc", default=DEFAULT_RPC,
+                    help="update: endpoint for the eth_getLogs scan. Defaults "
+                         "to the public RPC, which has no block-range cap; "
+                         "keyed providers often cap the range hard (Alchemy's "
+                         "free tier allows 10 blocks) which makes a chain-wide "
+                         "log scan impossible there.")
     ap.add_argument("--min-lag", type=int, default=0,
                     help="update: skip the run unless the index is at least "
                          "this many blocks behind the head")
