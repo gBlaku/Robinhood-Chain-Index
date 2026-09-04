@@ -12,3 +12,6 @@ BRIEF.md
 data/all_tokens.csv
 # full-chain launcher table ships gzipped; raw is ~86MB
 data/launchers_full.csv
+
+# local endpoint credentials, never committed
+.env

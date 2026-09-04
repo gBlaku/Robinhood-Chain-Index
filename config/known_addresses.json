@@ -54,6 +54,24 @@
       "note": "The chain's dominant launchpad (167,000+ tokens per its own site). Confirmed by two independent methods: parsing its launch events, and brute-force checking all 10,102 tokens born between its deployment and the PONS token -- both return exactly 2 (Test, then PONS).",
       "platform_token": "0x39dbed3a2bd333467115de45665cc57f813c4571 (PONS), launched block 8963150 by 0xb9f5f4ea... at nonce 0, i.e. a wallet created for the purpose",
       "codebase_note": "Emits the same event signatures as NOXA Fun but is NOT the same contract: 24192 bytes vs 22811, different bytecode. Forks of a common template."
+    },
+    "0xa5aab3f0c6eeadf30ef1d3eb997108e976351feb": {
+      "label": "Pons Launch Factory",
+      "operator": "0x263ed295dafae1d9aadd6e56c4b6f9f38ee019dd",
+      "first_token_block": 9019252,
+      "evidence": "Verified on Blockscout as contract name 'PonsLaunchFactory'. owner() is 0x263ed295..., itself a verified SafeProxy (multisig), which is what an operating team looks like rather than an individual. Routes 195,854 tokens from 68,892 distinct launchers across blocks 9,019,252-22,583,298 -- the largest launchpad on the chain at 30.8% of all attributed tokens. Distinct from the already-listed Pons contract 0x0c37a24f..., which is the earlier/other Pons deployment."
+    },
+    "0x26605f322f7ff986f381bb9a6e3f5dab0beaeb09": {
+      "label": "launchpad-B",
+      "operator": null,
+      "first_token_block": 4227932,
+      "evidence": "Verified on Blockscout as a TransparentUpgradeableProxy; EIP-1967 implementation slot points to 0xa3b96df56f254b926b17d5f7fb6cd858c216ff44, which is unverified, so the product name is not recoverable on chain and no name is asserted. Identified as a launchpad by routing: 122,519 tokens from 13,046 distinct launchers across blocks 4,227,932-22,583,328 (19.3% of attributed tokens). Its first token is 'TestToken' (symbol Test) at block 4,227,932, followed by a Uniswap V2 pair token one block later -- the same operator-smoke-test-then-pool pattern seen at launchpad-A and NOXA Fun."
+    },
+    "0xf193ede778a92dc37cb450a1ef1565ed1e8b7964": {
+      "label": "launchpad-C",
+      "operator": null,
+      "first_token_block": 7490602,
+      "evidence": "Unverified contract, no owner()/factory() getter responds, so no name is asserted. Identified as a launchpad by routing alone: 29,615 tokens from 9,831 distinct launchers across blocks 7,490,602-22,582,550 (4.7% of attributed tokens). Tens of thousands of tokens sharing one callee is the clustering signal described in the README; the launcher-to-token ratio of 3:1 rules out a single deployer bot."
     }
   },
   "bridged": {

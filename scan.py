@@ -1713,7 +1713,11 @@ def cmd_launcher(rpc, con, args):
         "WHERE address=?", (q,)).fetchone()
     if row and row[2]:
         sym, nm, txfrom, txto, aa = row
-        print(f"{q} is a token: {sym} ({nm})")
+        # Attribution reaches every token; metadata stops at ~block 9,000,000.
+        # Above it symbol/name are legitimately absent, and that is now the
+        # common case, so say so rather than printing "None (None)".
+        print(f"{q} is a token: "
+              f"{f'{sym} ({nm})' if sym else '(metadata not backfilled this high)'}")
         what = ("the EntryPoint" if txto in ENTRYPOINTS else "the launchpad")
         print(f"  explorers report creator : {txto or '(direct deploy)'}"
               f"   <- {what}, not a person")
@@ -1765,7 +1769,7 @@ def cmd_launcher(rpc, con, args):
     for fb, ts, sym, nm, addr, txt, live in launches:
         via = route_label(txt, short=True)
         when = fmt_ts(ts)[:16] if ts else "(live)"
-        print(f"  {fb:>11,}  {when:<17} {str(sym)[:13]:<14} {via:<14} {addr}")
+        print(f"  {fb:>11,}  {when:<17} {(sym or chr(45))[:13]:<14} {via:<14} {addr}")
 
     if complete:
         print(f"\n  Complete: attribution covers the whole indexed chain "
